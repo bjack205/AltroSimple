@@ -3,34 +3,53 @@ using ForwardDiff
 using BenchmarkTools
 include("../src/cones.jl")
 
+
+function dhess_dcon(cone, rho, jac_con, jac_proj, lambda_bar)
+    p,n = size(jac_con)
+    hess = zeros(n*n, p)
+    jac1 = kron(jac_con', jac_con'jac_proj)
+    jac2 = kron(jac_con'jac_proj, jac_con')
+    for i = 1:p
+        hess_proj = vec(∇²projection(cone, lambda_bar, even(i,n)))
+        hess[:,i] .= (jac1 + jac2) * hess_proj
+    end
+end
+
 evec(i,n) = insert!(zeros(n-1), i, 1) 
+
+n = 6
+p = 4
+v = randn(p-1)
+x = randn(n)
+
+A = [randn(p-1,n); zeros(1,n)]
+b = push!(zeros(p-1), norm(A*x) - 1e-2)
+c = A*x + b
+λ = randn(p)
+ρ = 1.2
+con(x) = A*x + b 
+jac(x) = A 
+λbar(x) = λ - ρ * con(x)
+
+# Cone projection and derivatives
 Pi(x) = projection(SecondOrderCone(), x)
 jac_Pi(x) = ∇projection(SecondOrderCone(), x)
 hess_Pi(x,b) = ∇²projection(SecondOrderCone(), x, b)
 
-n = 4
-v = randn(n-1)
-x = [v; norm(v) - 1e-2]
+obj(x) = 1/2ρ * dot(Pi(λbar(x)), Pi(λbar(x)))
+ForwardDiff.gradient(obj, x) ≈ -jac(x)'jac_Pi(λbar(x))'Pi(λbar(x))
+ForwardDiff.hessian(obj, x) ≈ ρ*jac(x)'jac_Pi(λbar(x))'jac_Pi(λbar(x))*jac(x) + ρ*jac(x)'hess_Pi(λbar(x),Pi(λbar(x)))*jac(x)
+dhess_dc_fd = ForwardDiff.jacobian(c->ρ*jac(x)'jac_Pi(λ-ρ*c)'jac_Pi(λ-ρ*c)*jac(x), c)  # Guass-Newton approximation
 
-obj(x) = 1/2 * dot(Pi(x), Pi(x))
-ForwardDiff.gradient(obj, x) ≈ jac_Pi(x)'Pi(x)
-ForwardDiff.hessian(obj, x) ≈ jac_Pi(x)'jac_Pi(x) + hess_Pi(x,Pi(x))
-hess2_fd = ForwardDiff.jacobian(x->jac_Pi(x)'jac_Pi(x), x)
-
-# Derivative of objective Hessian with respect to x
-hess2 = zeros(n*n,n)
-for i = 1:n
-    hess2[:,i] = kron(I(n), jac_Pi(x)') * vec(hess_Pi(x,evec(i,n))) + kron(jac_Pi(x)', I(n)) * vec(hess_Pi(x, evec(i,n))')
+# Derivative of objective Hessian with respect to the constraint 
+dhess_dc = zeros(n*n,p)
+jac_kron = ρ*kron(jac(x)', jac(x)'jac_Pi(λbar(x))') + ρ*kron(jac(x)'jac_Pi(λbar(x))', jac(x)')
+for i = 1:p
+    dhess_dc[:,i] =  -ρ*jac_kron * vec(hess_Pi(λbar(x),evec(i,p)))
 end
-hess2 ≈ hess2_fd
+dhess_dc ≈ dhess_dc_fd
 
-
-jac_Pi(x)'jac_Pi(x)
-hess_Pi(x,Pi(x))
-Pi(x)
-∇²projection(SecondOrderCone(), x, evec(2,n))
-
-hess = ForwardDiff.jacobian(jac_Pi, x)
-ForwardDiff.jacobian(x->hess_Pi(x,Pi(x)))
-
-reshape(hess[:,2], 4,4)
+# Derivative of the objective gradient with respect to the constraint
+dgrad_dc_fd = ForwardDiff.jacobian(c->-jac(x)'jac_Pi(λ-ρ*c)'Pi(λ-ρ*c), c)
+dgrad_dc = ρ*jac(x)'hess_Pi(λbar(x), Pi(λbar(x))) + ρ*jac(x)'jac_Pi(λbar(x))'jac_Pi(λbar(x))
+dgrad_dc ≈ dgrad_dc_fd
