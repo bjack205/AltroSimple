@@ -1,41 +1,49 @@
-using SimpleAltro
+using LinearAlgebra
 using ForwardDiff
 using Test
+using SimpleAltro: tvlqr, dlqr
 
-function tvlqr(A,B,f,Q,R,H,q,r)
-    T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
-        eltype(H[1]), eltype(q[1]), eltype(r[1])
-    )
-    n,m = size(B[1])
-    N = length(Q)
-    P = [zeros(T,n,n) for k = 1:N]
-    p = [zeros(T,n) for k = 1:N]
-    K = [zeros(T,m,n) for k = 1:N-1]
-    d = [zeros(T,m) for k = 1:N-1]
-    P[end] .= Q[end]
-    p[end] .= q[end]
-    for k = reverse(1:N-1)
-        Qxx = Q[k] + A[k]'P[k+1]*A[k]
-        Qux = H[k] + B[k]'P[k+1]*A[k]
-        Quu = R[k] + B[k]'P[k+1]*B[k]
-        Qx = q[k] + A[k]'*(P[k+1] * f[k] + p[k+1])
-        Qu = r[k] + B[k]'*(P[k+1] * f[k] + p[k+1])
+# function tvlqr(A,B,f,Q,R,H,q,r)
+#     T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
+#         eltype(H[1]), eltype(q[1]), eltype(r[1])
+#     )
+#     n,m = size(B[1])
+#     N = length(Q)
+#     P = [zeros(T,n,n) for k = 1:N]
+#     p = [zeros(T,n) for k = 1:N]
+#     K = [zeros(T,m,n) for k = 1:N-1]
+#     d = [zeros(T,m) for k = 1:N-1]
+#     P[end] .= Q[end]
+#     p[end] .= q[end]
+#     for k = reverse(1:N-1)
+#         Qxx = Q[k] + A[k]'P[k+1]*A[k]
+#         Qux = H[k] + B[k]'P[k+1]*A[k]
+#         Quu = R[k] + B[k]'P[k+1]*B[k]
+#         Qx = q[k] + A[k]'*(P[k+1] * f[k] + p[k+1])
+#         Qu = r[k] + B[k]'*(P[k+1] * f[k] + p[k+1])
         
-        K[k] .= Quu \ Qux
-        d[k] .= Quu \ Qu
-        P[k] .= Qxx + K[k]'Quu*K[k] + K[k]'Qux + Qux'K[k]
-        p[k] .= Qx + K[k]'Quu*d[k] + K[k]'Qu + Qux'd[k]
-    end
-    return K,d, P,p
-end
+#         K[k] .= Quu \ Qux
+#         d[k] .= Quu \ Qu
+#         P[k] .= Qxx + K[k]'Quu*K[k] + K[k]'Qux + Qux'K[k]
+#         p[k] .= Qx + K[k]'Quu*d[k] + K[k]'Qu + Qux'd[k]
+#     end
+#     return K,d, P,p
+# end
 
 n,m,N = 3,2,5
-prob = SimpleAltro.dLQR(n,m,N)
-SimpleAltro.calc_derivatives!(prob)
+A = [randn(n,n) for k = 1:N-1]
+B = [randn(n,m) for k = 1:N-1]
+f = [randn(n) for k = 1:N-1]
+Q = [diagm(rand(n)) for k = 1:N]
+R = [diagm(rand(m)) for k = 1:N-1]
+H = [zeros(m,n) for k = 1:N-1]
+q = [randn(n) for k = 1:N]
+r = [randn(m) for k = 1:N-1]
 
-p = prob
-Q,R,H,q,r = p.Q, p.R, p.H, p.q, p.r
-A,B,f = p.A, p.B, p.f
+∂ = dlqr(A,B,f, Q,R,H,q,r)
+
+# prob = SimpleAltro.dLQR(n,m,N)
+# SimpleAltro.calc_derivatives!(prob)
 
 k = N-1
 dx = zeros(n)
@@ -112,11 +120,11 @@ du1_drk = ForwardDiff.jacobian(r[k]) do rk
     K_[1] * dx + d_[1]
 end
 
-@test du1_dAk ≈ p.dP[k-1] * p.dP_dA[k] + p.dp[k-1] * p.dp_dA[k]
-@test du1_dBk ≈ p.dP[k-1] * p.dP_dB[k] + p.dp[k-1] * p.dp_dB[k]
-@test du1_dQk ≈ p.dP[k-1] * p.dP_dQ[k] + p.dp[k-1] * p.dp_dQ[k]
-@test du1_dRk ≈ p.dP[k-1] * p.dP_dR[k] + p.dp[k-1] * p.dp_dR[k]
-@test du1_dHk ≈ p.dP[k-1] * p.dP_dH[k] + p.dp[k-1] * p.dp_dH[k]
-@test du1_dfk ≈ p.dp[k-1] * p.dp_df[k]
-@test du1_dqk ≈ p.dp[k-1] * p.dp_dq[k]
-@test du1_drk ≈ p.dp[k-1] * p.dp_dr[k]
+@test du1_dAk ≈ ∂.dP[k-1] * ∂.dP_dA[k] + ∂.dp[k-1] * ∂.dp_dA[k]
+@test du1_dBk ≈ ∂.dP[k-1] * ∂.dP_dB[k] + ∂.dp[k-1] * ∂.dp_dB[k]
+@test du1_dQk ≈ ∂.dP[k-1] * ∂.dP_dQ[k] + ∂.dp[k-1] * ∂.dp_dQ[k]
+@test du1_dRk ≈ ∂.dP[k-1] * ∂.dP_dR[k] + ∂.dp[k-1] * ∂.dp_dR[k]
+@test du1_dHk ≈ ∂.dP[k-1] * ∂.dP_dH[k] + ∂.dp[k-1] * ∂.dp_dH[k]
+@test du1_dfk ≈ ∂.dp[k-1] * ∂.dp_df[k]
+@test du1_dqk ≈ ∂.dp[k-1] * ∂.dp_dq[k]
+@test du1_drk ≈ ∂.dp[k-1] * ∂.dp_dr[k]

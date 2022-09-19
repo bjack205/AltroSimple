@@ -285,6 +285,8 @@ function tvlqr(A,B,f,Q,R,H,q,r)
 end
 
 function dlqr(A,B,f, Q,R,H,q,r)
+    N = length(Q)
+    n,m = size(B[1])
     T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
         eltype(H[1]), eltype(q[1]), eltype(r[1])
     )
@@ -339,6 +341,7 @@ function dlqr(A,B,f, Q,R,H,q,r)
 
         K[k] .= Quu[k] \ Qux[k]
         d[k] .= Quu[k] \ Qu[k]
+        d[k] .*= -1
 
         let A=A[k], B=B[k], f=f[k], P=P[k+1], p=p[k+1], Quu=Quu[k], Qu=Qu[k], Qux=Qux[k], K=K[k], d=d[k]
             dQxx_dA = kron(A'P, I(n)) * Matrix(comm(n,n)) + kron(I(n), A'P)
@@ -365,16 +368,16 @@ function dlqr(A,B,f, Q,R,H,q,r)
             dK_dH = kron(I(n), inv(Quu))
             dK_dP[k] = kron(I(n),inv(Quu))*dQux_dP - kron(Qux', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
 
-            dd_dB = inv(Quu)*dQu_dB - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
-            dd_dR = -kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
-            dd_dr = inv(Quu)
-            dd_dP[k] = kron(f',Quu\B') - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
-            dd_dp[k] = Quu\(B')
+            dd_dB = -inv(Quu)*dQu_dB + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
+            dd_dR = +kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
+            dd_dr = -inv(Quu)
+            dd_dP[k] = -kron(f',Quu\B') + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
+            dd_dp[k] = -(Quu\(B'))
 
             # Derivatives wrt P
-            dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) + kron(Qux',I(n))*comm(m,n) + kron(I(n),Qux')
+            dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) - kron(Qux',I(n))*comm(m,n) - kron(I(n),Qux')
             dP_dQuu = kron(K',K')
-            dP_dQux = kron(I(n), K') + kron(K',I(n))*comm(m,n)
+            dP_dQux = -kron(I(n), K') - kron(K',I(n))*comm(m,n)
             dP_dA[k] = dQxx_dA + dP_dK * dK_dA + dP_dQux * dQux_dA
             dP_dB[k] = dP_dQuu * dQuu_dB + dP_dK * dK_dB + dP_dQux * dQux_dB
             dP_dQ[k] = Matrix(I,n*n,n*n) 
@@ -384,12 +387,12 @@ function dlqr(A,B,f, Q,R,H,q,r)
 
 
             # Derivatives wrt p
-            dp_dK = kron(d'Quu + Qu', I(n))*comm(m,n)
-            dp_dQuu = kron(d',K')
+            dp_dK = -kron(d'Quu + Qu', I(n))*comm(m,n)
+            dp_dQuu = -kron(d',K')
             dp_dQux = kron(d',I(n)) * comm(m,n) 
             dp_dQx = I(n) 
-            dp_dQu = K' 
-            dp_dd = K'Quu + Qux' 
+            dp_dQu = -K' 
+            dp_dd = -K'Quu + Qux' 
             dp_dA[k] = dp_dQux * dQux_dA + dp_dQx * dQx_dA + dp_dK * dK_dA
             dp_dB[k] = dp_dQuu * dQuu_dB + dp_dQux * dQux_dB + dp_dQu * dQu_dB + dp_dK * dK_dB + dp_dd * dd_dB
             dp_df[k] = dp_dQx * A'P + dp_dQu * B'P + dp_dd * (Quu\(B'P))
@@ -402,8 +405,8 @@ function dlqr(A,B,f, Q,R,H,q,r)
             dp_dp[k] = dp_dQx * dQx_dp + dp_dQu * dQu_dp + dp_dd * dd_dp[k]
         end
 
-        P[k] .= Qxx[k] + K[k]'Quu[k]*K[k] + K[k]'Qux[k] + Qux[k]'K[k]
-        p[k] .= Qx[k] + K[k]'Quu[k]*d[k] + K[k]'Qu[k] + Qux[k]'d[k]
+        P[k] .= Qxx[k] + K[k]'Quu[k]*K[k] - K[k]'Qux[k] - Qux[k]'K[k]
+        p[k] .= Qx[k] - K[k]'Quu[k]*d[k] - K[k]'Qu[k] + Qux[k]'d[k]
     end
 
     dP[1] .= dd_dP[1]
@@ -412,5 +415,9 @@ function dlqr(A,B,f, Q,R,H,q,r)
         dP[k] .= dP[k-1] * dP_dP[k] + dp[k-1] * dp_dP[k]
         dp[k] .= dp[k-1] * dp_dp[k]
     end
-    dP, dp
+    return (;
+        dP, dp, 
+        dP_dA, dP_dB, dP_dQ, dP_dR, dP_dH, 
+        dp_dA, dp_dB, dp_df, dp_dQ, dp_dR, dp_dH, dp_dq, dp_dr
+    )
 end

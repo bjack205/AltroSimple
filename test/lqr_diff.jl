@@ -1,36 +1,37 @@
 using LinearAlgebra
 using ForwardDiff
 using MatrixCalculus
-using SimpleAltro
+using SimpleAltro: tvlqr, dlqr
+using Test
 
-function tvlqr(A,B,f,Q,R,H,q,r)
-    T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
-        eltype(H[1]), eltype(q[1]), eltype(r[1])
-    )
-    n,m = size(B[1])
-    N = length(Q)
-    P = [zeros(T,n,n) for k = 1:N]
-    p = [zeros(T,n) for k = 1:N]
-    K = [zeros(T,m,n) for k = 1:N-1]
-    d = [zeros(T,m) for k = 1:N-1]
-    P[end] .= Q[end]
-    p[end] .= q[end]
-    for k = reverse(1:N-1)
-        Qxx = Q[k] + A[k]'P[k+1]*A[k]
-        Qux = H[k] + B[k]'P[k+1]*A[k]
-        Quu = R[k] + B[k]'P[k+1]*B[k]
-        Qx = q[k] + A[k]'*(P[k+1] * f[k] + p[k+1])
-        Qu = r[k] + B[k]'*(P[k+1] * f[k] + p[k+1])
+# function tvlqr(A,B,f,Q,R,H,q,r)
+#     T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
+#         eltype(H[1]), eltype(q[1]), eltype(r[1])
+#     )
+#     n,m = size(B[1])
+#     N = length(Q)
+#     P = [zeros(T,n,n) for k = 1:N]
+#     p = [zeros(T,n) for k = 1:N]
+#     K = [zeros(T,m,n) for k = 1:N-1]
+#     d = [zeros(T,m) for k = 1:N-1]
+#     P[end] .= Q[end]
+#     p[end] .= q[end]
+#     for k = reverse(1:N-1)
+#         Qxx = Q[k] + A[k]'P[k+1]*A[k]
+#         Qux = H[k] + B[k]'P[k+1]*A[k]
+#         Quu = R[k] + B[k]'P[k+1]*B[k]
+#         Qx = q[k] + A[k]'*(P[k+1] * f[k] + p[k+1])
+#         Qu = r[k] + B[k]'*(P[k+1] * f[k] + p[k+1])
         
-        K[k] .= Quu \ Qux
-        d[k] .= Quu \ Qu
-        P[k] .= Qxx + K[k]'Quu*K[k] + K[k]'Qux + Qux'K[k]
-        p[k] .= Qx + K[k]'Quu*d[k] + K[k]'Qu + Qux'd[k]
-    end
-    return K,d, P,p
-end
+#         K[k] .= Quu \ Qux
+#         d[k] .= Quu \ Qu
+#         P[k] .= Qxx + K[k]'Quu*K[k] + K[k]'Qux + Qux'K[k]
+#         p[k] .= Qx + K[k]'Quu*d[k] + K[k]'Qu + Qux'd[k]
+#     end
+#     return K,d, P,p
+# end
 
-const ⊗ = kron
+# const ⊗ = kron
 
 ##
 n,m,N = 3,2,5
@@ -52,47 +53,47 @@ calcQuu(R, B, P) = R + B'P*B
 calcQx(q, A, f, P, p) = q + A'*(P * f + p)
 calcQu(r, B, f, P, p) = r + B'*(P * f + p)
 dQxx_dA = kron(A'P, I(n)) * Matrix(comm(n,n)) + kron(I(n), A'P)
-dQxx_dA ≈ ForwardDiff.jacobian(A->calcQxx(Q,A,P), A)
+@test dQxx_dA ≈ ForwardDiff.jacobian(A->calcQxx(Q,A,P), A)
 
 dQux_dA = kron(I(n), B'P)
-dQux_dA ≈ ForwardDiff.jacobian(A->calcQux(H,A,B,P), A)
+@test dQux_dA ≈ ForwardDiff.jacobian(A->calcQux(H,A,B,P), A)
 
 dQx_dA = kron(f'P + p', I(n)) * comm(n,n)
-dQx_dA ≈ ForwardDiff.jacobian(A->calcQx(q,A,f,P,p), A)
+@test dQx_dA ≈ ForwardDiff.jacobian(A->calcQx(q,A,f,P,p), A)
 
 dQuu_dB = kron(B'P, I(m)) * Matrix(comm(n,m)) + kron(I(m), B'P)
-dQuu_dB ≈ ForwardDiff.jacobian(B->calcQuu(R,B,P), B)
+@test dQuu_dB ≈ ForwardDiff.jacobian(B->calcQuu(R,B,P), B)
 
 dQux_dB = kron(A'P,I(m)) * comm(n,m)
-dQux_dB ≈ ForwardDiff.jacobian(B->calcQux(H,A,B,P), B)
+@test dQux_dB ≈ ForwardDiff.jacobian(B->calcQux(H,A,B,P), B)
 
 dQu_dB = kron(f'P + p', I(m)) * comm(n,m)
-dQu_dB ≈ ForwardDiff.jacobian(B->calcQu(r,B,f,P,p), B)
+@test dQu_dB ≈ ForwardDiff.jacobian(B->calcQu(r,B,f,P,p), B)
 
 dQxx_dP = kron(A',A')
-dQxx_dP ≈ ForwardDiff.jacobian(P->calcQxx(Q,A,P), P)
+@test dQxx_dP ≈ ForwardDiff.jacobian(P->calcQxx(Q,A,P), P)
 
 dQux_dP = kron(A',B')
-dQux_dP ≈ ForwardDiff.jacobian(P->calcQux(H,A,B,P), P)
+@test dQux_dP ≈ ForwardDiff.jacobian(P->calcQux(H,A,B,P), P)
 
 dQuu_dP = kron(B',B')
-dQuu_dP ≈ ForwardDiff.jacobian(P->calcQuu(R,B,P), P)
+@test dQuu_dP ≈ ForwardDiff.jacobian(P->calcQuu(R,B,P), P)
 
 dQx_dP = kron(f',A')
-dQx_dP ≈ ForwardDiff.jacobian(P->calcQx(q,A,f,P,p), P)
+@test dQx_dP ≈ ForwardDiff.jacobian(P->calcQx(q,A,f,P,p), P)
 
 dQu_dP = kron(f',B')
-dQu_dP ≈ ForwardDiff.jacobian(P->calcQu(r,B,f,P,p), P)
+@test dQu_dP ≈ ForwardDiff.jacobian(P->calcQu(r,B,f,P,p), P)
 
 dQx_dp = A'
-dQx_dp ≈ ForwardDiff.jacobian(p->calcQx(q,A,f,P,p), p)
+@test dQx_dp ≈ ForwardDiff.jacobian(p->calcQx(q,A,f,P,p), p)
 
 dQu_dp = B' 
-dQu_dp ≈ ForwardDiff.jacobian(p->calcQu(r,B,f,P,p), p)
+@test dQu_dp ≈ ForwardDiff.jacobian(p->calcQu(r,B,f,P,p), p)
 
 ##
 calcK(A,B,R,H,P) = (R + B'P*B)\(H + B'P*A)
-calcd(B,f,R,r,P,p) = (R + B'P*B)\(r + B'*(P*f + p))
+calcd(B,f,R,r,P,p) = -(R + B'P*B)\(r + B'*(P*f + p))
 
 Qxx = calcQxx(Q,A,P)
 Qux = calcQux(H,A,B,P)
@@ -103,37 +104,37 @@ Qu = calcQu(r,B,f,P,p)
 calcK(A,B,R,H,P) ≈ Quu\Qux
 
 dK_dA = kron(I(n),inv(Quu))*dQux_dA
-dK_dA ≈ ForwardDiff.jacobian(A->calcK(A,B,R,H,P),A)
+@test dK_dA ≈ ForwardDiff.jacobian(A->calcK(A,B,R,H,P),A)
 
 dK_dB = kron(I(n),inv(Quu))*dQux_dB - kron(Qux', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
-dK_dB ≈ ForwardDiff.jacobian(B->calcK(A,B,R,H,P),B)
+@test dK_dB ≈ ForwardDiff.jacobian(B->calcK(A,B,R,H,P),B)
 
 dK_dR = -kron(Qux', I(m))*kron(inv(Quu),inv(Quu))
-dK_dR ≈ ForwardDiff.jacobian(R->calcK(A,B,R,H,P),R)
+@test dK_dR ≈ ForwardDiff.jacobian(R->calcK(A,B,R,H,P),R)
 
 dK_dH = kron(I(n), inv(Quu))
-dK_dH ≈ ForwardDiff.jacobian(H->calcK(A,B,R,H,P),H)
+@test dK_dH ≈ ForwardDiff.jacobian(H->calcK(A,B,R,H,P),H)
 
 dK_dP = kron(I(n),inv(Quu))*dQux_dP - kron(Qux', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
-dK_dP ≈ ForwardDiff.jacobian(P->calcK(A,B,R,H,P),P)
+@test dK_dP ≈ ForwardDiff.jacobian(P->calcK(A,B,R,H,P),P)
 
-dd_dB = inv(Quu)*dQu_dB - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
-dd_dB ≈ ForwardDiff.jacobian(B->calcd(B,f,R,r,P,p),B)
+dd_dB = -inv(Quu)*dQu_dB + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
+@test dd_dB ≈ ForwardDiff.jacobian(B->calcd(B,f,R,r,P,p),B)
 
-dd_dR = -kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
-dd_dR ≈ ForwardDiff.jacobian(R->calcd(B,f,R,r,P,p),R)
+dd_dR = +kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
+@test dd_dR ≈ ForwardDiff.jacobian(R->calcd(B,f,R,r,P,p),R)
 
-dd_dr = inv(Quu)
-dd_dr ≈ ForwardDiff.jacobian(r->calcd(B,f,R,r,P,p),r)
+dd_dr = -inv(Quu)
+@test dd_dr ≈ ForwardDiff.jacobian(r->calcd(B,f,R,r,P,p),r)
 
-dd_dP = kron(f',Quu\B') - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
-dd_dP ≈ ForwardDiff.jacobian(P->calcd(B,f,R,r,P,p),P)
+dd_dP = -kron(f',Quu\B') + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
+@test dd_dP ≈ ForwardDiff.jacobian(P->calcd(B,f,R,r,P,p),P)
 
-dd_dp = Quu\(B')
-dd_dp ≈ ForwardDiff.jacobian(p->calcd(B,f,R,r,P,p),p)
+dd_dp = -(Quu\(B'))
+@test dd_dp ≈ ForwardDiff.jacobian(p->calcd(B,f,R,r,P,p),p)
 
 ##
-calcP(Qxx,Quu,Qux,K) = Qxx + K'Quu*K + K'Qux + Qux'K
+calcP(Qxx,Quu,Qux,K) = Qxx + K'Quu*K - K'Qux - Qux'K
 calcP(A,B,Q,R,H,P) = begin
     Qxx = calcQxx(Q, A, P)
     Qux = calcQux(H, A, B, P)
@@ -141,7 +142,7 @@ calcP(A,B,Q,R,H,P) = begin
     K = calcK(A,B, R, H, P)
     calcP(Qxx,Quu,Qux,K)
 end
-calcp(Quu,Qux,Qx,Qu,K,d) = Qx + K'Quu*d + K'Qu + Qux'd
+calcp(Quu,Qux,Qx,Qu,K,d) = Qx - K'Quu*d - K'Qu + Qux'd
 calcp(A,B,f,Q,R,H,q,r,P,p) = begin
     Qux = calcQux(H, A, B, P)
     Quu = calcQuu(R, B, P)
@@ -155,80 +156,80 @@ end
 K = calcK(A,B,R,H,P)
 d = calcd(B,f, R,r, P,p)
 
-dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) + kron(Qux',I(n))*comm(m,n) + kron(I(n),Qux')
-dP_dK ≈ ForwardDiff.jacobian(K->calcP(Qxx,Quu,Qux,K),K)
+dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) - kron(Qux',I(n))*comm(m,n) - kron(I(n),Qux')
+@test dP_dK ≈ ForwardDiff.jacobian(K->calcP(Qxx,Quu,Qux,K),K) atol=1e-12
 
 dP_dQuu = kron(K',K')
-dP_dQuu ≈ ForwardDiff.jacobian(Quu->calcP(Qxx,Quu,Qux,K),Quu)
+@test dP_dQuu ≈ ForwardDiff.jacobian(Quu->calcP(Qxx,Quu,Qux,K),Quu)
 
-dP_dQux = kron(I(n), K') + kron(K',I(n))*comm(m,n)
-dP_dQux ≈ ForwardDiff.jacobian(Qux->calcP(Qxx,Quu,Qux,K),Qux)
+dP_dQux = -kron(I(n), K') - kron(K',I(n))*comm(m,n)
+@test dP_dQux ≈ ForwardDiff.jacobian(Qux->calcP(Qxx,Quu,Qux,K),Qux)
 
 dP_dA = dQxx_dA + dP_dK * dK_dA + dP_dQux * dQux_dA
-dP_dA ≈ ForwardDiff.jacobian(A->calcP(A,B,Q,R,H,P),A)
+@test dP_dA ≈ ForwardDiff.jacobian(A->calcP(A,B,Q,R,H,P),A)
 
 dP_dB = dP_dQuu * dQuu_dB + dP_dK * dK_dB + dP_dQux * dQux_dB
-dP_dB ≈ ForwardDiff.jacobian(B->calcP(A,B,Q,R,H,P),B)
+@test dP_dB ≈ ForwardDiff.jacobian(B->calcP(A,B,Q,R,H,P),B)
 
 dP_dQ = Matrix(I,n*n,n*n) 
-dP_dQ ≈ ForwardDiff.jacobian(Q->calcP(A,B,Q,R,H,P),Q)
+@test dP_dQ ≈ ForwardDiff.jacobian(Q->calcP(A,B,Q,R,H,P),Q)
 
 dP_dR = dP_dQuu + dP_dK * dK_dR
-dP_dR ≈ ForwardDiff.jacobian(R->calcP(A,B,Q,R,H,P),R)
+@test dP_dR ≈ ForwardDiff.jacobian(R->calcP(A,B,Q,R,H,P),R)
 
 dP_dH = dP_dQux + dP_dK * dK_dH
-dP_dH ≈ ForwardDiff.jacobian(H->calcP(A,B,Q,R,H,P),H)
+@test dP_dH ≈ ForwardDiff.jacobian(H->calcP(A,B,Q,R,H,P),H)
 
 dP_dP = dQxx_dP + dP_dQux * dQux_dP + dP_dQuu * dQuu_dP + dP_dK * dK_dP
-dP_dP ≈ ForwardDiff.jacobian(P->calcP(A,B,Q,R,H,P),P)
+@test dP_dP ≈ ForwardDiff.jacobian(P->calcP(A,B,Q,R,H,P),P)
 
-dp_dK = kron(d'Quu + Qu', I(n))*comm(m,n)
-dp_dK ≈ ForwardDiff.jacobian(K->calcp(Quu,Qux,Qx,Qu,K,d),K)
+dp_dK = -kron(d'Quu + Qu', I(n))*comm(m,n)
+@test dp_dK ≈ ForwardDiff.jacobian(K->calcp(Quu,Qux,Qx,Qu,K,d),K) atol=1e-12
 
-dp_dQuu = kron(d',K')
-dp_dQuu ≈ ForwardDiff.jacobian(Quu->calcp(Quu,Qux,Qx,Qu,K,d),Quu)
+dp_dQuu = -kron(d',K')
+@test dp_dQuu ≈ ForwardDiff.jacobian(Quu->calcp(Quu,Qux,Qx,Qu,K,d),Quu)
 
 dp_dQux = kron(d',I(n)) * comm(m,n) 
-dp_dQux ≈ ForwardDiff.jacobian(Qux->calcp(Quu,Qux,Qx,Qu,K,d),Qux)
+@test dp_dQux ≈ ForwardDiff.jacobian(Qux->calcp(Quu,Qux,Qx,Qu,K,d),Qux)
 
 dp_dQx = I(n) 
-dp_dQx ≈ ForwardDiff.jacobian(Qx->calcp(Quu,Qux,Qx,Qu,K,d),Qx)
+@test dp_dQx ≈ ForwardDiff.jacobian(Qx->calcp(Quu,Qux,Qx,Qu,K,d),Qx)
 
-dp_dQu = K' 
-dp_dQu ≈ ForwardDiff.jacobian(Qu->calcp(Quu,Qux,Qx,Qu,K,d),Qu)
+dp_dQu = -K' 
+@test dp_dQu ≈ ForwardDiff.jacobian(Qu->calcp(Quu,Qux,Qx,Qu,K,d),Qu)
 
-dp_dd = K'Quu + Qux' 
-dp_dd ≈ ForwardDiff.jacobian(d->calcp(Quu,Qux,Qx,Qu,K,d),d)
+dp_dd = -K'Quu + Qux' 
+@test dp_dd ≈ ForwardDiff.jacobian(d->calcp(Quu,Qux,Qx,Qu,K,d),d)
 
 dp_dA = dp_dQux * dQux_dA + dp_dQx * dQx_dA + dp_dK * dK_dA
-dp_dA ≈ ForwardDiff.jacobian(A->calcp(A,B,f,Q,R,H,q,r,P,p),A)
+@test dp_dA ≈ ForwardDiff.jacobian(A->calcp(A,B,f,Q,R,H,q,r,P,p),A)
 
 dp_dB = dp_dQuu * dQuu_dB + dp_dQux * dQux_dB + dp_dQu * dQu_dB + dp_dK * dK_dB + dp_dd * dd_dB
-dp_dB ≈ ForwardDiff.jacobian(B->calcp(A,B,f,Q,R,H,q,r,P,p),B)
+@test dp_dB ≈ ForwardDiff.jacobian(B->calcp(A,B,f,Q,R,H,q,r,P,p),B)
 
 dp_df = dp_dQx * A'P + dp_dQu * B'P + dp_dd * (Quu\(B'P))
-dp_df ≈ ForwardDiff.jacobian(f->calcp(A,B,f,Q,R,H,q,r,P,p),f)
+@test dp_df ≈ ForwardDiff.jacobian(f->calcp(A,B,f,Q,R,H,q,r,P,p),f)
 
 dp_dQ = zeros(n,n*n) 
-dp_dQ ≈ ForwardDiff.jacobian(Q->calcp(A,B,f,Q,R,H,q,r,P,p),Q)
+@test dp_dQ ≈ ForwardDiff.jacobian(Q->calcp(A,B,f,Q,R,H,q,r,P,p),Q)
 
 dp_dR = dp_dQuu + dp_dK * dK_dR + dp_dd * dd_dR
-dp_dR ≈ ForwardDiff.jacobian(R->calcp(A,B,f,Q,R,H,q,r,P,p),R)
+@test dp_dR ≈ ForwardDiff.jacobian(R->calcp(A,B,f,Q,R,H,q,r,P,p),R)
 
 dp_dH = dp_dQux + dp_dK * dK_dH
-dp_dH ≈ ForwardDiff.jacobian(H->calcp(A,B,f,Q,R,H,q,r,P,p),H)
+@test dp_dH ≈ ForwardDiff.jacobian(H->calcp(A,B,f,Q,R,H,q,r,P,p),H)
 
 dp_dq = dp_dQx
-dp_dq ≈ ForwardDiff.jacobian(q->calcp(A,B,f,Q,R,H,q,r,P,p),q)
+@test dp_dq ≈ ForwardDiff.jacobian(q->calcp(A,B,f,Q,R,H,q,r,P,p),q)
 
 dp_dr = dp_dQu + dp_dd * dd_dr
-dp_dr ≈ ForwardDiff.jacobian(r->calcp(A,B,f,Q,R,H,q,r,P,p),r)
+@test dp_dr ≈ ForwardDiff.jacobian(r->calcp(A,B,f,Q,R,H,q,r,P,p),r)
 
 dp_dP = dp_dQuu * dQuu_dP + dp_dQux * dQux_dP + dp_dQx * dQx_dP + dp_dQu * dQu_dP + dp_dK * dK_dP + dp_dd * dd_dP 
-dp_dP ≈ ForwardDiff.jacobian(P->calcp(A,B,f,Q,R,H,q,r,P,p),P)
+@test dp_dP ≈ ForwardDiff.jacobian(P->calcp(A,B,f,Q,R,H,q,r,P,p),P)
 
 dp_dp = dp_dQx * dQx_dp + dp_dQu * dQu_dp + dp_dd * dd_dp
-dp_dp ≈ ForwardDiff.jacobian(p->calcp(A,B,f,Q,R,H,q,r,P,p),p)
+@test dp_dp ≈ ForwardDiff.jacobian(p->calcp(A,B,f,Q,R,H,q,r,P,p),p)
 
 
 ##
@@ -296,6 +297,7 @@ for k = reverse(1:N-1)
 
     K[k] .= Quu[k] \ Qux[k]
     d[k] .= Quu[k] \ Qu[k]
+    d[k] .*= -1
 
     let A=A[k], B=B[k], f=f[k], P=P[k+1], p=p[k+1], Quu=Quu[k], Qu=Qu[k], Qux=Qux[k], K=K[k], d=d[k]
         dQxx_dA = kron(A'P, I(n)) * Matrix(comm(n,n)) + kron(I(n), A'P)
@@ -322,16 +324,16 @@ for k = reverse(1:N-1)
         dK_dH = kron(I(n), inv(Quu))
         dK_dP[k] = kron(I(n),inv(Quu))*dQux_dP - kron(Qux', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
 
-        dd_dB .= inv(Quu)*dQu_dB - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
-        dd_dR .= -kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
-        dd_dr .= inv(Quu)
-        dd_dP[k] = kron(f',Quu\B') - kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
-        dd_dp[k] = Quu\(B')
+        dd_dB = -inv(Quu)*dQu_dB + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
+        dd_dR = +kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
+        dd_dr = -inv(Quu)
+        dd_dP[k] = -kron(f',Quu\B') + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
+        dd_dp[k] = -(Quu\(B'))
 
         # Derivatives wrt P
-        dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) + kron(Qux',I(n))*comm(m,n) + kron(I(n),Qux')
+        dP_dK = kron(K'Quu, I(n))*comm(m,n) + kron(I(n), K'Quu) - kron(Qux',I(n))*comm(m,n) - kron(I(n),Qux')
         dP_dQuu = kron(K',K')
-        dP_dQux = kron(I(n), K') + kron(K',I(n))*comm(m,n)
+        dP_dQux = -kron(I(n), K') - kron(K',I(n))*comm(m,n)
         dP_dA[k] = dQxx_dA + dP_dK * dK_dA + dP_dQux * dQux_dA
         dP_dB[k] = dP_dQuu * dQuu_dB + dP_dK * dK_dB + dP_dQux * dQux_dB
         dP_dQ[k] = Matrix(I,n*n,n*n) 
@@ -341,12 +343,12 @@ for k = reverse(1:N-1)
 
 
         # Derivatives wrt p
-        dp_dK = kron(d'Quu + Qu', I(n))*comm(m,n)
-        dp_dQuu = kron(d',K')
+        dp_dK = -kron(d'Quu + Qu', I(n))*comm(m,n)
+        dp_dQuu = -kron(d',K')
         dp_dQux = kron(d',I(n)) * comm(m,n) 
         dp_dQx = I(n) 
-        dp_dQu = K' 
-        dp_dd = K'Quu + Qux' 
+        dp_dQu = -K' 
+        dp_dd = -K'Quu + Qux' 
         dp_dA[k] = dp_dQux * dQux_dA + dp_dQx * dQx_dA + dp_dK * dK_dA
         dp_dB[k] = dp_dQuu * dQuu_dB + dp_dQux * dQux_dB + dp_dQu * dQu_dB + dp_dK * dK_dB + dp_dd * dd_dB
         dp_df[k] = dp_dQx * A'P + dp_dQu * B'P + dp_dd * (Quu\(B'P))
@@ -359,8 +361,8 @@ for k = reverse(1:N-1)
         dp_dp[k] = dp_dQx * dQx_dp + dp_dQu * dQu_dp + dp_dd * dd_dp[k]
     end
 
-    P[k] .= Qxx[k] + K[k]'Quu[k]*K[k] + K[k]'Qux[k] + Qux[k]'K[k]
-    p[k] .= Qx[k] + K[k]'Quu[k]*d[k] + K[k]'Qu[k] + Qux[k]'d[k]
+    P[k] .= Qxx[k] + K[k]'Quu[k]*K[k] - K[k]'Qux[k] - Qux[k]'K[k]
+    p[k] .= Qx[k] - K[k]'Quu[k]*d[k] - K[k]'Qu[k] + Qux[k]'d[k]
 end
 
 
@@ -373,20 +375,21 @@ for k = 2:N-1
     dp[k] .= dp[k-1] * dp_dp[k]
 end
 
-##
-calcK(A,B,R,H,P) = (R + B'P*B)\(H + B'P*A)
-calcd(B,f,R,r,P,p) = (R + B'P*B)\(r + B'*(P*f + p))
+dP_,dp_ = dlqr(A,B,f, Q,R,H,q,r)
+dP_ ≈ dP
+dp_ ≈ dp
 
+##
 dx = zeros(n)
-k = 6
+k = 4
 du1_dAk = ForwardDiff.jacobian(A[k]) do Ak
     A_ = similar.(A,eltype(Ak))
     for i = 1:N-1
         A_[i] .= A[i]
     end
     A_[k] .= Ak
-    K,d = tvlqr(A_,B,f, Q,R,H, q,r)
-    K_[1] * dx + d[1]
+    K_,d_ = tvlqr(A_,B,f, Q,R,H, q,r)
+    K_[1] * dx + d_[1]
 end
 du1_dBk = ForwardDiff.jacobian(B[k]) do Bk
     B_ = similar.(B,eltype(Bk))

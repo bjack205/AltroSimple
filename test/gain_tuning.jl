@@ -150,7 +150,7 @@ scotty_interp = generate_scotty_trajectory(;scale=0.10)
 total_length = knots(scotty_interp).knots[end]
 Xref
 
-Nref = 2001
+Nref = 501
 tref = 50
 h = tref / (Nref -1)
 average_speed = total_length / tref
@@ -192,16 +192,49 @@ for k = 1:Nref-1
     Xref[k+1] = fd(Xref[k], Uref[k], h)
 end
 
+function simulate(fd, df, Xref, Uref, Qd, Rd, h, x0=copy(Xref[1]); Nmpc=21, tsim=h*(length(Xref) - Nmpc))
+    times = range(0, tsim, step=h)
+    n = length(Xref[1])
+    m = length(Uref[1])
+    Nsim = length(times)
+    Xsim = [copy(x0)*NaN for t in times]
+    Usim = [zeros(m) for k = 1:Nsim-1]
+    Xmpc = [[zeros(n) for k = 1:Nmpc] for i = 1:Nsim-1]
+
+    mpc_inds = 1:Nmpc
+
+    Xsim[1] .= x0
+    for k = 1:150
+        xref = view(Xref, mpc_inds)
+        uref = view(Uref, mpc_inds)
+        dx = Xsim[k] - xref[1]
+        dX,dU = tvlqr(fd, df, xref, uref, Qd, Rd, h, dx)
+        Xmpc[k] = xref .+ dX
+
+        Usim[k] = uref[1] + dU[1]
+        Xsim[k+1] = fd(Xsim[k], uref[1] + dU[1], h)
+        mpc_inds = mpc_inds .+ 1
+    end
+    Xsim, Usim, Xmpc
+end
+
+Xsim, Usim, Xmpc = simulate(fd, df, Xref, Uref, Qd, Rd, h)
+
+p = traj2(Xref, size=(800,800), aspect_ratio=:equal)
+# traj2!(Xmpc[10], lw=2)
+traj2!(Xsim, lw=2)
+
 ##
-dx0 = Float64[0.0,0.0,0,0]
-x = Xref[1] + dx0
-mpc_inds = 1:Nmpc
+kstart = 300
+dx0 = Float64[0.0,1.0,0,0]
+x = Xref[kstart] + dx0
+mpc_inds = (1:Nmpc) .+ (kstart-1)
 
 
 ## Solve
 Nmpc = 21
-Qd = [1.0,1.0,0.001,0.001] 
-Rd = fill(0.001,m)
+Qd = [1.0,1.0,1.001,1.001] 
+Rd = [0.1, 0.1] 
 xref = view(Xref, mpc_inds)
 uref = view(Uref, mpc_inds)
 dx = x - xref[1]
@@ -236,14 +269,12 @@ display(p)
 mpc_inds = mpc_inds .+ 1
 x = fd(x, uref[1] + dU[1], h)
 
-# fd(x, uref[1] + dU[1], h)
-# A[1] * dX[1] + B[1] * dU[1] + f[1] + xref[2] 
 
 dU[1]
 
 
 ##
 
-# Xsim, Usim = simulate(fd, df, Xref, Uref, h, Qd, Rd)
-# traj2(Xref, size=(800,800))
-# traj2!(Xsim)
+Xsim, Usim = simulate(fd, df, Xref, Uref, h, Qd, Rd)
+traj2(Xref, size=(800,800))
+traj2!(Xsim)
