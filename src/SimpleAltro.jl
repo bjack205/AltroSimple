@@ -1,5 +1,9 @@
 module SimpleAltro
 
-greet() = print("Hello World!")
+using LinearAlgebra
+using MatrixCalculus
+
+include("cones.jl")
+include("dlqr.jl")
 
 end # module

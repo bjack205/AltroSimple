@@ -1,6 +1,7 @@
 using LinearAlgebra
 using ForwardDiff
 using MatrixCalculus
+using SimpleAltro
 
 function tvlqr(A,B,f,Q,R,H,q,r)
     T = promote_type(eltype(A[1]), eltype(B[1]), eltype(f[1]), eltype(Q[1]), eltype(R[1]), 
