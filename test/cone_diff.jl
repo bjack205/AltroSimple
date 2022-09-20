@@ -39,7 +39,7 @@ hess_Pi(x,b) = ∇²projection(SecondOrderCone(), x, b)
 obj(x) = 1/2ρ * dot(Pi(λbar(x)), Pi(λbar(x)))
 ForwardDiff.gradient(obj, x) ≈ -jac(x)'jac_Pi(λbar(x))'Pi(λbar(x))
 ForwardDiff.hessian(obj, x) ≈ ρ*jac(x)'jac_Pi(λbar(x))'jac_Pi(λbar(x))*jac(x) + ρ*jac(x)'hess_Pi(λbar(x),Pi(λbar(x)))*jac(x)
-dhess_dc_fd = ForwardDiff.jacobian(c->ρ*jac(x)'jac_Pi(λ-ρ*c)'jac_Pi(λ-ρ*c)*jac(x), c)  # Guass-Newton approximation
+dhess_dc_fd = ForwardDiff.jacobian(c->ρ*jac(x)'jac_Pi(λ-ρ*c)'jac_Pi(λ-ρ*c)*jac(x), c)  # Gauss-Newton approximation
 
 # Derivative of objective Hessian with respect to the constraint 
 dhess_dc = zeros(n*n,p)

@@ -77,6 +77,7 @@ end
 
 # Dynamics expansion
 T = Float64
+N = Nmpc
 A = [zeros(T, n, n) for k = 1:N-1]
 B = [zeros(T, n, m) for k = 1:N-1]
 f = [zeros(T,n) for k = 1:N-1]
@@ -106,7 +107,47 @@ for k = 1:N
     end
 end
 
-K,d, = tvlqr(A,B,f, lxx,luu,lux,lx,lu)
+K,d,P,p = tvlqr(A,B,f, lxx,luu,lux,lx,lu)
+dx,du,dy = tvlqr(A,B,f, lxx,luu,lux,lx,lu, zeros(n))
+x2 = x + dx
+u2 = u + du
+
+stat_x = map(1:Nmpc-1) do k
+    -dy[k] + A[k]'dy[k+1] + lx[k]
+end
+norm(stat_x) / Nmpc
+
+stat_u = map(1:Nmpc-1) do k
+    B[k]'dy[k+1] + lu[k]
+end
+norm(stat_u) / Nmpc
+
+stat_x = map(1:Nmpc-1) do k
+    lxx[k] * dx[k] - dy[k] + A[k]'dy[k+1] + lx[k]
+end
+@test norm(stat_x) < sqrt(eps()) 
+
+stat_u = map(1:Nmpc-1) do k
+    luu[k] * du[k] + B[k]'dy[k+1] + lu[k]
+end
+@test norm(stat_u) < sqrt(eps()) 
+
+res = let k = 1
+    Qxx = lxx[k] + A[k]'P[k+1]*A[k]
+    Qux = lux[k] + B[k]'P[k+1]*A[k]
+    Quu = luu[k] + B[k]'P[k+1]*B[k]
+    Qx = lx[k] + A[k]'*(P[k+1] * f[k] + p[k+1])
+    Qu = lu[k] + B[k]'*(P[k+1] * f[k] + p[k+1])
+
+    # lu[k] + B[k]'P[k+1]*(dyn(x2[k],u2[k],h) - x[k]) + B[k]'p[k+1]
+    Quu * du[k] + Qux * dx[k] + lu[k] + B[k]'*(P[k+1] * (dyn(x2[k],u2[k],h) - x2[k+1]) + p[k+1])
+    # R[k] * u2[k] + r[k] + B[k]'P[k+1] * (dyn(x2[k],u2[k],h) - x[k]) + B[k]'p[k+1]
+end
+@show res
+
+f1 = dyn(x2[1],u2[1],h)
+B1 = jac(x2[1],u2[1],h)[:,n+1:end]
+R[1] * u2[1] + r[1] + B1'P[2]*f1 + B1'p[2] 
 
 # Check merit function derivative
 xref = copy(x)
@@ -123,8 +164,56 @@ dJ_ad = ForwardDiff.derivative(a->SimpleAltro.rollout_merit(a, dyn,xref,uref,h, 
 
 ## Try running iLQR
 SimpleAltro.ilqr(dyn,jac, x0,u0,h, Q,R,H,q,r)
-xilqr, uilqr = SimpleAltro.ilqr(dyn,jac, x0_zero,u0_zero,h, Q,R,H,q,r)
+xilqr, uilqr, xu_hist = SimpleAltro.ilqr(dyn,jac, x0_zero,u0_zero,h, Q,R,H,q,r)
+sx,su = SimpleAltro.ilqr(dyn,jac, x0_zero,u0_zero,h, Q,R,H,q,r)
 
+SimpleAltro.ilqr(dyn,jac, xu_hist[end-1][1],xu_hist[end-1][2],h, Q,R,H,q,r)
+xu_hist[1] == (x0_zero, u0_zero)
+
+SimpleAltro.stationarity(dyn,jac, xilqr, uilqr,h, )
+
+###
+function control_policy(theta, Nmpc, i; x0=x0, u0=u0)
+    global Xref
+    global Uref
+    global dyn
+    global jac
+
+    n = length(Xref[1])
+    m = length(Uref[1])
+
+    Qd = theta[1:n]
+    Rd = theta[n+1:end]
+
+    mpc_inds = (i-1) .+ (1:Nmpc)
+    xref = view(Xref, mpc_inds)
+    uref = view(Uref, mpc_inds)
+
+    T = eltype(theta)
+    Q = [zeros(T,n,n) for k = 1:Nmpc]
+    R = [zeros(T,m,m) for k = 1:Nmpc-1]
+    H = [zeros(T,m,n) for k = 1:Nmpc-1]
+    q = [zeros(T,n) for k = 1:Nmpc]
+    r = [zeros(T,m) for k = 1:Nmpc-1]
+    
+    for k = 1:Nmpc-1
+        Q[k] .= Diagonal(Qd)
+        R[k] .= Diagonal(Rd)
+        q[k] .= -Qd .* xref[k]
+        r[k] .= -Rd .* uref[k]
+    end
+    Q[Nmpc] .= Diagonal(Qd)
+    q[Nmpc] .= -Qd .* xref[Nmpc]
+
+    SimpleAltro.ilqr(dyn,jac, x0,u0,h, Q,R,H,q,r)
+end
+
+theta = [Qd; Rd]
+control_policy(theta, Nmpc, 1, x0=x0_zero, u0=u0_zero)
+control_policy(theta, Nmpc, 1, x0=xu_hist[end-1][1], u0=xu_hist[end-1][2])
+
+ForwardDiff.jacobian(theta->control_policy(theta, Nmpc, 1; x0=xu_hist[end-1][1], u0=xu_hist[end-1][2]), theta)
+ForwardDiff.jacobian(theta->control_policy(theta, Nmpc, 1; x0=x0_zero, u0=u0_zero), theta)
 
 ##
 traj2(Xref, size=(800,800), aspect_ratio=:equal)

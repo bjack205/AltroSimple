@@ -295,7 +295,7 @@ function tvlqr(A,B,f, Q,R,H,q,r, x0)
     T = promote_type(eltype(K[1]), eltype(d[1]), eltype(x0))
 
     X = [zeros(T,n) for k = 1:Nmpc]
-    U = [zeros(T,m) for k = 1:Nmpc]
+    U = [zeros(T,m) for k = 1:Nmpc-1]
     Y = [zeros(T,n) for k = 1:Nmpc]    
 
     X[1] .= x0

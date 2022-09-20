@@ -35,7 +35,8 @@ function rollout_merit(alpha::T, dyn, xref,uref,h, K,d, Q,R,H,q,r) where T
     J
 end
 
-function rollout_merit_derivative(alpha::T, dyn,jac, xref,uref,h, K,d, Q,R,H,q,r) where T
+function rollout_merit_derivative(alpha, dyn,jac, xref,uref,h, K,d, Q,R,H,q,r)
+    T = promote_type(typeof(alpha), eltype(Q[1]), eltype(R[1]), eltype(H[1]), eltype(q[1]), eltype(r[1]))
     N = length(xref)
     n = length(xref[1])
     m = length(uref[1])
@@ -44,7 +45,7 @@ function rollout_merit_derivative(alpha::T, dyn,jac, xref,uref,h, K,d, Q,R,H,q,r
 
     x[1] .= xref[1]
     dJ = zero(alpha)
-    dx_da = zeros(n)
+    dx_da = zeros(T,n)
     J = 0.5 * dot(x[1], Q[1], x[1]) + dot(q[1], x[1])
     for k = 1:N-1
         dx = x[k] - xref[k] 
@@ -96,6 +97,8 @@ function ilqr(dyn, jac, x0,u0,h, Q,R,H,q,r;
     lx = [zeros(T, n) for k = 1:N]
     lu = [zeros(T, m) for k = 1:N]
 
+    xu_hist = [(x,u)]
+    local P,p
     for iter = 1:max_iters
         cost_prev = cost(x, u, Q, R, H, q, r)
 
@@ -115,7 +118,20 @@ function ilqr(dyn, jac, x0,u0,h, Q,R,H,q,r;
         end
 
         # Calculate TVLQR policy
-        K,d,_,_,ΔV = tvlqr(A,B,f, lxx,luu,lux,lx,lu)
+        dx,du,dy, K,d,P,p = tvlqr(A,B,f, lxx,luu,lux,lx,lu, zeros(n))
+
+        stat_x = map(1:N-1) do k
+            lxx[k] * dx[k] - dy[k] + A[k]'dy[k+1] + lx[k]
+        end
+        sdx = norm(stat_x)
+
+        stat_u = map(1:N-1) do k
+            luu[k] * du[k] + B[k]'dy[k+1] + lu[k]
+        end
+        sdu = norm(stat_u)
+
+        sx = Inf
+        su = Inf
 
         # Forward pass
         α = 1.0
@@ -136,6 +152,7 @@ function ilqr(dyn, jac, x0,u0,h, Q,R,H,q,r;
             if armijo && wolfe
                 x = deepcopy(xbar)
                 u = deepcopy(ubar)
+                # push!(xu_hist, (x,u))
                 line_search_successful = true
                 break
             else 
@@ -146,16 +163,28 @@ function ilqr(dyn, jac, x0,u0,h, Q,R,H,q,r;
             error("Line search failed.")
         end
 
+        # Stationarity
+        y = p  # the Lagrange multipliers converge to the gradient of the cost-to-go
+        sx = mapreduce(+,1:N-1) do k
+            norm(lx[k] - y[k] + A[k]'y[k+1])
+        end / N
+
+        su = mapreduce(+,1:N-1) do k
+           norm(lu[k] + B[k]'y[k+1])
+        end / N
+
+        # Print log
         ΔJ = J0 - J
         verbose >= 1 && @printf(
-            "Iter %3d: J = %10.4g ΔJ = %10.4e ∂J = %10.4e α = %10.4g\n", 
-            iter, J, ΔJ, dJ, α
+            "Iter %3d: J = %10.4g ΔJ = %10.4e ∂J = % 10.4e α = %6.4g sx = %6.2e, su = %6.2e\n", 
+            iter, J, ΔJ, dJ, α, sx, su
         )
 
+        # Termination criteria
         if ΔJ < tol_cost
             @info "Converged"
             break
         end
     end
-    return x,u
+    return x,u, xu_hist
 end
