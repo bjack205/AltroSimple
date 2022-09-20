@@ -268,6 +268,7 @@ function tvlqr(A,B,f,Q,R,H,q,r)
     d = [zeros(T,m) for k = 1:N-1]
     P[end] .= Q[end]
     p[end] .= q[end]
+    ΔV = zeros(T,2) 
     for k = reverse(1:N-1)
         Qxx = Q[k] + A[k]'P[k+1]*A[k]
         Qux = H[k] + B[k]'P[k+1]*A[k]
@@ -280,8 +281,11 @@ function tvlqr(A,B,f,Q,R,H,q,r)
         d[k] .*= -1
         P[k] .= Qxx + K[k]'Quu*K[k] - K[k]'Qux - Qux'K[k]
         p[k] .= Qx - K[k]'Quu*d[k] - K[k]'Qu + Qux'd[k]
+
+        ΔV[1] += 0.5 * dot(d[k], Quu, d[k])
+        ΔV[2] += dot(d[k], Qu)
     end
-    return K,d, P,p
+    return K,d, P,p,ΔV
 end
 
 function tvlqr(A,B,f, Q,R,H,q,r, x0)

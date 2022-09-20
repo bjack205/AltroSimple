@@ -76,3 +76,42 @@ end
 # using Plots
 # plot(scotty, aspect_ratio=:equal)
 # plot!(Tuple.(newscotty), aspect_ratio=:equal)
+
+function scotty_traj_bicycle(; tref=50.0, Nref=501, scale=0.1)
+    scotty_interp = generate_scotty_trajectory(;scale)
+    total_length = knots(scotty_interp).knots[end]
+
+    h = tref / (Nref -1)
+    average_speed = total_length / tref
+
+    s = range(0, total_length, length=Nref)
+    xy_ref = scotty_interp.(s)
+
+    Xref = [zeros(n) for k = 1:Nref]
+    Uref = [zeros(m) for k = 1:Nref]
+    for k = 1:Nref
+        p = xy_ref[k]
+        v = 0.0
+        if k == 1 
+            pn = xy_ref[k+1]
+            theta = atan(pn[2] - p[2], pn[1] - p[1]) 
+            v = norm(pn - p) / h
+        elseif k < Nref
+            p_prev = xy_ref[k-1]
+            θ_prev = Xref[k-1][3]
+            p_next = xy_ref[k+1]
+
+            d1 = [p - p_prev; 0]
+            d2 = [p_next - p; 0]
+            phi = cross(d1, d2)
+            dtheta = asin(phi[3] / (norm(d1) * norm(d2)))
+            theta = θ_prev + dtheta 
+            v = norm(p_next - p) / h
+        else
+            theta = Xref[k-1][3] 
+        end
+        Xref[k] = [p; theta; 0.0]
+        Uref[k] = [v; 0.0]
+    end
+    return Xref, Uref
+end
