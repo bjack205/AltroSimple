@@ -325,8 +325,18 @@ function dlqr(A,B,f, Q,R,H,q,r)
     dp_dP = [zeros(T,n, n*n) for k = 1:N-1]
     dp_dp = [zeros(T,n, n) for k = 1:N-1]
 
-    dP = deepcopy(dd_dP)
-    dp = deepcopy(dd_dp)
+    dP_K = deepcopy(dK_dP)   # partial of K1 wrt P[1:N]
+    dP = deepcopy(dd_dP)     # partial of d1 wrt P[1:N]
+    dp = deepcopy(dd_dp)     # partial of d1 wrt p[1:N]
+    
+    dK_dA = zeros(m*n, n*n)
+    dK_dB = zeros(m*n, n*m)
+    dK_dQ = zeros(m*n, n*n)
+    dK_dR = zeros(m*n, m*m)
+    dK_dH = zeros(m*n, m*n)
+    dd_dB = zeros(m, n*m)
+    dd_dR = zeros(m, m*m)
+    dd_dr = zeros(m, m)
 
     P[end] .= Q[end]
     p[end] .= q[end]
@@ -368,9 +378,9 @@ function dlqr(A,B,f, Q,R,H,q,r)
             dK_dH = kron(I(n), inv(Quu))
             dK_dP[k] = kron(I(n),inv(Quu))*dQux_dP - kron(Qux', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
 
-            dd_dB = -inv(Quu)*dQu_dB + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
-            dd_dR = +kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
-            dd_dr = -inv(Quu)
+            dd_dB .= -inv(Quu)*dQu_dB + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dB
+            dd_dR .= +kron(Qu', I(m))*kron(inv(Quu),inv(Quu))
+            dd_dr .= -inv(Quu)
             dd_dP[k] = -kron(f',Quu\B') + kron(Qu', I(m))*kron(inv(Quu),inv(Quu))*dQuu_dP
             dd_dp[k] = -(Quu\(B'))
 
@@ -411,13 +421,17 @@ function dlqr(A,B,f, Q,R,H,q,r)
 
     dP[1] .= dd_dP[1]
     dp[1] .= dd_dp[1]
+    dP_K[1] .= dK_dP[1]
     for k = 2:N-1
         dP[k] .= dP[k-1] * dP_dP[k] + dp[k-1] * dp_dP[k]
         dp[k] .= dp[k-1] * dp_dp[k]
+        dP_K[k] .= dP_K[k-1] * dP_dP[k]
     end
     return (;
-        dP, dp, 
+        K, d, P, p,
+        dP, dp, dP_K, 
         dP_dA, dP_dB, dP_dQ, dP_dR, dP_dH, 
-        dp_dA, dp_dB, dp_df, dp_dQ, dp_dR, dp_dH, dp_dq, dp_dr
+        dp_dA, dp_dB, dp_df, dp_dQ, dp_dR, dp_dH, dp_dq, dp_dr,
+        dd_dB, dd_dR, dd_dr, dK_dA, dK_dB, dK_dQ, dK_dR, dK_dH,
     )
 end

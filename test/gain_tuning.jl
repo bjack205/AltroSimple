@@ -1,11 +1,17 @@
 using LinearAlgebra
 import SimpleAltro: tvlqr, dlqr 
 using RobotZoo
+using FiniteDiff
+using ForwardDiff
 import RobotDynamics as RD
 using Plots
+using Printf
+using Test
 
 include("recipes.jl")
 include("scotty.jl")
+
+evec(n,i) = begin e = zeros(n); e[i] = 1; e end
 
 struct TrackingObjective{T}
     f::Function     # dynamics function
@@ -19,7 +25,53 @@ struct TrackingObjective{T}
     Nmpc::Int
 end
 
-function tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, h, x0)
+function build_tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd)
+    T = promote_type(eltype(Qd), eltype(Rd))
+    n = length(Xref[1])
+    m = length(Uref[1])
+    Nmpc = length(Xref)
+    A = [zeros(T,n,n) for k = 1:Nmpc-1]
+    B = [zeros(T,n,m) for k = 1:Nmpc-1]
+    f = [zeros(T,n) for k = 1:Nmpc-1]
+
+    Q = [zeros(T,n,n) for k = 1:Nmpc]
+    R = [zeros(T,m,m) for k = 1:Nmpc-1]
+    H = [zeros(T,m,n) for k = 1:Nmpc-1]
+    q = [zeros(T,n) for k = 1:Nmpc]
+    r = [zeros(T,m) for k = 1:Nmpc-1]
+    
+    for k = 1:Nmpc-1
+        f[k] .= fd(Xref[k], Uref[k], h) - Xref[k+1]
+        J = df(Xref[k], Uref[k], h)
+
+        A[k] .= J[:,1:n]
+        B[k] .= J[:,1+n:end]
+        Q[k] .= Diagonal(Qd)
+        R[k] .= Diagonal(Rd)
+    end
+    Q[Nmpc] .= Diagonal(Qd)
+    return A,B,f, Q,R,H,q,r
+end
+
+function tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, x0)
+    K,d,P,p = tvlqr(build_tvlqr(fd, df, Xref, Uref, Qd, Rd)...)
+
+    X = [zeros(T,n) for k = 1:Nmpc]
+    U = [zeros(T,m) for k = 1:Nmpc-1]
+    Y = [zeros(T,n) for k = 1:Nmpc]
+
+    X[1] .= x0
+    for k = 1:Nmpc-1
+        Y[k] = P[k] * X[k] + p[k]
+        U[k] = -K[k] * X[k] + d[k]
+        X[k+1] = A[k] * X[k] + B[k] * U[k] + f[k]
+    end
+    Y[Nmpc] = P[Nmpc] * X[Nmpc] + p[Nmpc]
+
+    return X,U,Y, K,d,A,B,f
+end
+
+function dlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, h)
     T = promote_type(eltype(Qd), eltype(Rd))
     n = length(Xref[1])
     m = length(Uref[1])
@@ -48,17 +100,14 @@ function tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, h, x0)
         R[k] .= Diagonal(Rd)
     end
     Q[Nmpc] .= Diagonal(Qd)
-    K,d,P,p = tvlqr(A,B,f, Q,R,H,q,r)
+    ∂ = dlqr(A,B,f, Q,R,H,q,r)
 
-    X[1] .= x0
-    for k = 1:Nmpc-1
-        Y[k] = P[k] * X[k] + p[k]
-        U[k] = -K[k] * X[k] + d[k]
-        X[k+1] = A[k] * X[k] + B[k] * U[k] + f[k]
-    end
-    Y[Nmpc] = P[Nmpc] * X[Nmpc] + p[Nmpc]
+    return ∂
+end
 
-    return X,U,Y, K,d,A,B,f
+function tvlqr_get_control(fd::Function, df::Function, Xref, Uref, Qd, Rd, h, x0)
+    _,dU = tvlqr(fd, df, Xref, Uref, Qd, Rd, h, x0)
+    return Uref[1] + dU[1]
 end
 
 function nonlinear_rollout(f, K,d, xref, uref, x0, h)
@@ -108,28 +157,6 @@ function objective(obj::TrackingObjective, theta)
     return J
 end
 
-function simulate(fd, df, Xref, Uref, h, Qd, Rd, x0=copy(Xref[1]); Nmpc=21, tsim=h * (length(Xref) - 21))
-    m = length(Uref[1])
-    times = range(0, tsim, step=h)
-    Nsim = length(times)
-    Xsim = [copy(x0) for t in times]
-    Usim = [zeros(m) for t in times]
-    mpc_inds = 1:Nmpc
-    for k = 1:Nsim-1
-        # Evaluate controller 
-        xref = view(Xref, mpc_inds)
-        uref = view(Uref, mpc_inds)
-        dx = Xsim[k] - Xref[k]
-        dX,dU = tvlqr(fd, df, xref, uref, Qd, Rd, h, dx)
-
-        Usim[k] = dU[1] + uref[1]
-        Xsim[k+1] = fd(Xsim[k], Usim[k], h)
-
-        mpc_inds = mpc_inds .+ 1
-    end
-    Xsim, Usim
-end
-
 ## Generate the model
 model = RobotZoo.BicycleModel()
 dmodel = RD.DiscretizedDynamics{RD.RK4}(model)
@@ -148,7 +175,6 @@ n,m = RD.dims(model)
 ## Generate the reference trajectory
 scotty_interp = generate_scotty_trajectory(;scale=0.10)
 total_length = knots(scotty_interp).knots[end]
-Xref
 
 Nref = 501
 tref = 50
@@ -186,25 +212,26 @@ for k = 1:Nref
 end
 
 ## Create a dynamically feasible reference
-Uref = [[1.0, 10*sin(k/pi)] for k = 1:Nref-1]
-Xref = [zeros(n) for k = 1:Nref]
-for k = 1:Nref-1
-    Xref[k+1] = fd(Xref[k], Uref[k], h)
-end
+# Uref = [[1.0, 10*sin(k/pi)] for k = 1:Nref-1]
+# Xref = [zeros(n) for k = 1:Nref]
+# for k = 1:Nref-1
+#     Xref[k+1] = fd(Xref[k], Uref[k], h)
+# end
 
 function simulate(fd, df, Xref, Uref, Qd, Rd, h, x0=copy(Xref[1]); Nmpc=21, tsim=h*(length(Xref) - Nmpc))
+    T = promote_type(eltype(Qd), eltype(Rd))
     times = range(0, tsim, step=h)
     n = length(Xref[1])
     m = length(Uref[1])
     Nsim = length(times)
-    Xsim = [copy(x0)*NaN for t in times]
-    Usim = [zeros(m) for k = 1:Nsim-1]
-    Xmpc = [[zeros(n) for k = 1:Nmpc] for i = 1:Nsim-1]
+    Xsim = [zeros(T,n) * NaN for t in times]
+    Usim = [zeros(T,m) for k = 1:Nsim-1]
+    Xmpc = [[zeros(T,n) for k = 1:Nmpc] for i = 1:Nsim-1]
 
     mpc_inds = 1:Nmpc
 
     Xsim[1] .= x0
-    for k = 1:150
+    for k = 1:Nsim - 1
         xref = view(Xref, mpc_inds)
         uref = view(Uref, mpc_inds)
         dx = Xsim[k] - xref[1]
@@ -218,23 +245,17 @@ function simulate(fd, df, Xref, Uref, Qd, Rd, h, x0=copy(Xref[1]); Nmpc=21, tsim
     Xsim, Usim, Xmpc
 end
 
-Xsim, Usim, Xmpc = simulate(fd, df, Xref, Uref, Qd, Rd, h)
-
-p = traj2(Xref, size=(800,800), aspect_ratio=:equal)
-# traj2!(Xmpc[10], lw=2)
-traj2!(Xsim, lw=2)
-
-##
+## MPC Params
+Qd = [1.0,1.0,1.001,1.001] 
+Rd = [0.1, 0.1] 
+Nmpc = 21
 kstart = 300
 dx0 = Float64[0.0,1.0,0,0]
 x = Xref[kstart] + dx0
 mpc_inds = (1:Nmpc) .+ (kstart-1)
 
 
-## Solve
-Nmpc = 21
-Qd = [1.0,1.0,1.001,1.001] 
-Rd = [0.1, 0.1] 
+## Step through Solve
 xref = view(Xref, mpc_inds)
 uref = view(Uref, mpc_inds)
 dx = x - xref[1]
@@ -269,12 +290,249 @@ display(p)
 mpc_inds = mpc_inds .+ 1
 x = fd(x, uref[1] + dU[1], h)
 
+#############################################
+# Diff through the closed-loop rollout
+#############################################
+function objective(theta)
+    Qd = theta[1:n]
+    Rd = theta[n+1:end]
+    Xsim, Usim = simulate(fd, df, Xref, Uref, Qd, Rd, h; tsim=20.0)
+    Nsim = length(Xsim)
+    mapreduce(+,1:Nsim) do k
+        dx = Xsim[k] - Xref[k]
+        dot(dx,dx)
+    end / 2Nsim
+end
 
-dU[1]
+# Parameter derivatives
+dQ_dtheta = [reduce(hcat,evec(n*n,i + (i-1)*n) for i = 1:n) zeros(n*n, m)]
+dR_dtheta = [zeros(m*m, n) reduce(hcat, evec(m*m, i + (i-1)*m) for i = 1:m)]
+
+# Simulate the system
+Xsim, Usim = simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)
+Nsim = length(Xsim)
+Jsim = map(1:Nsim-1) do k
+    df(Xsim[k], Usim[k], h)
+end
+Asim = [J[:,1:n] for J in Jsim]
+Bsim = [J[:,1+n:end] for J in Jsim]
 
 
-##
+# Build TVLQR data
+mpc_inds = 1:Nmpc
+xref = view(Xref, mpc_inds)
+uref = view(Uref, mpc_inds)
+A,B,f, Q,R,H,q,r = build_tvlqr(fd, df, xref, uref, Qd, Rd)
+dx = Xsim[1] - xref[1]
 
-Xsim, Usim = simulate(fd, df, Xref, Uref, h, Qd, Rd)
+# Use ForwardDiff to diff TVLQR 
+du1_dQd = ForwardDiff.jacobian(Qd) do Qd
+    Q_ = similar.(Q,eltype(Qd))
+    for i = 1:Nmpc
+        Q_[i] .= Diagonal(Qd) 
+    end
+    # Q_[k] .= Qk
+    K_,d_ = tvlqr(A,B,f, Q_,R,H, q,r)
+    -K_[1] * dx + d_[1]
+end
+du1_dRd = ForwardDiff.jacobian(Rd) do Rd
+    R_ = similar.(R,eltype(Rd))
+    for i = 1:Nmpc-1
+        R_[i] .= Diagonal(Rd) 
+    end
+    K_,d_ = tvlqr(A,B,f, Q,R_,H, q,r)
+    -K_[1] * dx + d_[1]
+end
+dU1 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[2][1], theta)
+
+# Get the TVLQR derivatives
+∂1 = dlqr(A,B,f, Q,R,H,q,r)
+du1_dQ = mapreduce(+,2:Nmpc) do k
+    ∂1.dP[k-1] * ∂1.dP_dQ[k] + ∂1.dp[k-1] * ∂1.dp_dQ[k]
+end
+du1_dR = mapreduce(+,1:Nmpc-1) do k
+    if k > 1
+        ∂1.dP[k-1] * ∂1.dP_dR[k] + ∂1.dp[k-1] * ∂1.dp_dR[k]
+    else
+        ∂1.dd_dR
+    end
+end
+@test du1_dQ * dQ_dtheta ≈ [du1_dQd zeros(m,m)]
+@test du1_dR * dR_dtheta ≈ [zeros(m,n) du1_dRd]
+du1_dtheta = du1_dQ * dQ_dtheta + du1_dR * dR_dtheta
+
+@test dU1 ≈ du1_dtheta
+
+#############################################
+# Next time step
+#############################################
+mpc_inds = 1 .+ (1:Nmpc) 
+xref = view(Xref, mpc_inds)
+uref = view(Uref, mpc_inds)
+
+# Use ForwardDiff to get TVLQR derivatives
+A,B,f, Q,R,H,q,r = build_tvlqr(fd, df, xref, uref, Qd, Rd)
+dx = Xsim[2] - xref[1]
+du1_dQd = ForwardDiff.jacobian(Qd) do Qd
+    Q_ = similar.(Q,eltype(Qd))
+    for i = 1:Nmpc
+        Q_[i] .= Diagonal(Qd) 
+    end
+    K_,d_ = tvlqr(A,B,f, Q_,R,H, q,r)
+    -K_[1] * dx + d_[1]
+end
+du1_dRd = ForwardDiff.jacobian(Rd) do Rd
+    R_ = similar.(R,eltype(Rd))
+    for i = 1:Nmpc-1
+        R_[i] .= Diagonal(Rd) 
+    end
+    K_,d_ = tvlqr(A,B,f, Q,R_,H, q,r)
+    -K_[1] * dx + d_[1]
+end
+dX2 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[1][2], theta)
+dU2 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[2][2], theta)
+
+# Calculate TVLQR derivatives
+∂2 = dlqr(fd, df, xref, uref, Qd, Rd, h)
+dd_dQ_2 = mapreduce(+,2:Nmpc) do k
+    ∂2.dP[k-1] * ∂2.dP_dQ[k] + ∂2.dp[k-1] * ∂2.dp_dQ[k]
+end
+dd_dR_2 = mapreduce(+,1:Nmpc-1) do k
+    if k > 1
+        ∂2.dP[k-1] * ∂2.dP_dR[k] + ∂2.dp[k-1] * ∂2.dp_dR[k]
+    else
+        ∂2.dd_dR
+    end
+end
+dK_dQ_2 = mapreduce(+,2:Nmpc) do k
+    ∂2.dP_K[k-1] * ∂2.dP_dQ[k]
+end
+dK_dR_2 = mapreduce(+,1:Nmpc-1) do k
+    if k > 1
+        ∂2.dP_K[k-1] * ∂2.dP_dR[k]
+    else
+        ∂2.dK_dR
+    end
+end
+
+@test dX2 ≈ Bsim[1] * du1_dtheta
+du1_dQ_2 = (-kron(dx',I(m)) * dK_dQ_2 + dd_dQ_2) * dQ_dtheta
+du1_dR_2 = (-kron(dx',I(m)) * dK_dR_2 + dd_dR_2) * dR_dtheta
+@test du1_dQ_2 ≈ [du1_dQd zeros(m,m)]
+@test du1_dR_2 ≈ [zeros(m,n) du1_dRd]
+du1_dtheta_2 = du1_dQ_2 + du1_dR_2 - ∂2.K[1] * dX2
+
+@test du1_dtheta_2 ≈ dU2
+
+#############################################
+## Calculate derivatives of CL trajectory
+#############################################
+dX_dθ = [zeros(n,n+m) for k = 1:Nsim]
+dU_dθ = [zeros(m,n+m) for k = 1:Nsim]
+
+dX_dθ[1] .= 0
+for i = 1:Nsim-1
+    mpc_inds = (i-1) .+ (1:Nmpc) 
+    xref = view(Xref, mpc_inds)
+    uref = view(Uref, mpc_inds)
+    dx = Xsim[i] - xref[1]                   # state error at first time step
+    ∂ = dlqr(fd, df, xref, uref, Qd, Rd, h)  # calculate derivatives of TVLQR
+
+    # Calculate derivatives wrt parameters
+    # Since the parameters apply at each time step, sum the derivatives of each time step
+    dd_dQ = mapreduce(+,2:Nmpc) do k
+        ∂.dP[k-1] * ∂.dP_dQ[k] + ∂.dp[k-1] * ∂.dp_dQ[k]
+    end
+    dd_dR = mapreduce(+,1:Nmpc-1) do k
+        if k > 1
+            ∂.dP[k-1] * ∂.dP_dR[k] + ∂.dp[k-1] * ∂.dp_dR[k]
+        else
+            ∂.dd_dR
+        end
+    end
+    dK_dQ = mapreduce(+,2:Nmpc) do k
+        ∂.dP_K[k-1] * ∂.dP_dQ[k]
+    end
+    dK_dR = mapreduce(+,1:Nmpc-1) do k
+        if k > 1
+            ∂.dP_K[k-1] * ∂.dP_dR[k]
+        else
+            ∂.dK_dR
+        end
+    end
+
+    # Calculate total derivative of u1 wrt the parameters θ
+    du_dQ = (-kron(dx',I(m)) * dK_dQ + dd_dQ) * dQ_dtheta
+    du_dR = (-kron(dx',I(m)) * dK_dR + dd_dR) * dR_dtheta
+    dU_dθ[i] = du_dQ + du_dR - ∂.K[1] * dX_dθ[i] 
+
+    # Derivative of the state wrt the parameters θ
+    dX_dθ[i+1] = Asim[i] * dX_dθ[i] + Bsim[i] * dU_dθ[i]
+end
+@test dU_dθ[2] ≈ du1_dtheta_2
+
+dXN = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[1][Nsim], theta)
+@test dX_dθ[Nsim] ≈ dXN
+
+dtheta = mapreduce(+,1:Nsim) do i
+    dx = Xsim[i] - Xref[i]
+    dX_dθ[i]'dx
+end / Nsim
+
+dtheta_ad = ForwardDiff.gradient(objective, theta)
+# Derivative of entire objective
+
+Qd = [1.0,1.0,10.100,10.100] 
+Rd = [0.01, 0.01] 
+theta = [Qd; Rd]
+
+alpha = 0.1
+pos(x) = max(zero(x), x)
+for i = 1:100
+    J = objective(theta)
+    # dtheta = FiniteDiff.finite_difference_gradient(objective, theta)
+    dtheta = ForwardDiff.gradient(objective, theta)
+    cost_decrease = false
+    alpha = 0.5
+    dJ = Inf 
+    for j = 1:20
+        theta_bar = pos.(theta - alpha * dtheta)
+        Jbar = Inf
+        try
+            Jbar = objective(theta_bar)
+        catch
+            Jbar = Inf
+        end
+        if Jbar < J
+            dJ = J - Jbar
+            theta .= theta_bar
+            cost_decrease = true
+            break
+        else
+            alpha *= 0.5
+        end
+    end
+    @printf("Iter %3d: J = %10.5f, ||dJ|| = %10.5g, dJ = %10.4g, alpha = %10.4g\n", i, J, norm(dtheta), dJ, alpha)
+    if dJ < 1e-6
+        @info "Cost not decreasing much"
+        break
+    end
+    if !cost_decrease
+        @warn "Cost not decreased"
+        break
+    end
+end
+
+objective(theta)
+theta
+Qd
+theta
+Xsim, Usim = simulate(fd, df, Xref, Uref, Qd, Rd, h; tsim=20.0)
+Xsim2, Usim2 = simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)
+Nsim = length(Xsim)
 traj2(Xref, size=(800,800))
 traj2!(Xsim)
+traj2!(Xsim2)
+
+norm(Xsim - Xref[1:Nsim])^2 / Nsim
+norm(Xsim2 - Xref[1:Nsim])^2 / Nsim
