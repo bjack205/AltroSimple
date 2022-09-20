@@ -284,6 +284,26 @@ function tvlqr(A,B,f,Q,R,H,q,r)
     return K,d, P,p
 end
 
+function tvlqr(A,B,f, Q,R,H,q,r, x0)
+    K,d,P,p = tvlqr(A,B,f, Q,R,H,q,r)
+    m,n = size(K[1])
+    Nmpc = length(Q)
+    T = promote_type(eltype(K[1]), eltype(d[1]), eltype(x0))
+
+    X = [zeros(T,n) for k = 1:Nmpc]
+    U = [zeros(T,m) for k = 1:Nmpc]
+    Y = [zeros(T,n) for k = 1:Nmpc]    
+
+    X[1] .= x0
+    for k = 1:Nmpc-1
+        Y[k] = P[k] * X[k] + p[k]
+        U[k] = -K[k] * X[k] + d[k]
+        X[k+1] = A[k] * X[k] + B[k] * U[k] + f[k]
+    end
+    Y[Nmpc] = P[Nmpc] * X[Nmpc] + p[Nmpc]
+    X,U,Y, K,d,P,p
+end
+
 function dlqr(A,B,f, Q,R,H,q,r)
     N = length(Q)
     n,m = size(B[1])
@@ -434,4 +454,84 @@ function dlqr(A,B,f, Q,R,H,q,r)
         dp_dA, dp_dB, dp_df, dp_dQ, dp_dR, dp_dH, dp_dq, dp_dr,
         dd_dB, dd_dR, dd_dr, dK_dA, dK_dB, dK_dQ, dK_dR, dK_dH,
     )
+end
+
+function tvlqr_closed_loop_derivatives(dyn,jac,x0,theta,h,build_tvlqr, n,m,Nsim,Nmpc; 
+        dA=nothing,dB=nothing,df=nothing,dQ=nothing,dR=nothing,dH=nothing,dq=nothing,dr=nothing)
+
+    params = filter(!isnothing, [dA,dB,df,dQ,dR,dH,dq,dr])
+    @assert length(params) > 0
+    p = length(theta) 
+    @assert all(param->size(param[1],2)==p, params)
+
+    X = [zeros(n) for k = 1:Nsim]
+    U = [zeros(m) for k = 1:Nsim-1]
+    dX = [zeros(n,n+m) for k = 1:Nsim]
+    dU = [zeros(m,n+m) for k = 1:Nsim-1]
+
+    X[1] .= x0
+    dX[1] .= 0
+    for i = 1:Nsim-1
+
+        # Build the TVLQR problem about the reference trajectory
+        # This is problem-dependent, since the input in an arbitrary theta
+        # For ALTRO, we'll need to pass in the initial trajectory as well
+        tvlqr_data = build_tvlqr(theta,Nmpc,i)
+        xref = tvlqr_data[1]
+        uref = tvlqr_data[2]
+        ∂ = dlqr(tvlqr_data[3:end]...)       # calculate derivatives of TVLQR problem
+
+        # Simulate the system forward
+        dx = X[i] - xref[1]           # state error at first time step
+        du = -∂.K[1] * dx + ∂.d[1]    # get control
+        U[i] = uref[1] + du
+        X[i+1] = dyn(X[i], U[i], h)   # simulate forward
+
+        # Get the Jacobian of the simulated trajectory
+        Ji = jac(X[i], U[i], h)
+        Ai = Ji[:,1:n]
+        Bi = Ji[:,n+1:end]
+    
+        # Calculate derivatives wrt parameters
+        # Since the parameters apply at each time step, sum the derivatives of each time step
+        dd_dθ = mapreduce(+,1:Nmpc) do k
+            dd = zeros(m,p)
+            if !isnothing(dQ) && k > 1
+                dd_dQk = ∂.dP[k-1] * ∂.dP_dQ[k] + ∂.dp[k-1] * ∂.dp_dQ[k]
+                dd += dd_dQk * dQ[k]
+            end
+            if !isnothing(dR) && k < Nmpc
+                dd_dRk = if k > 1 
+                    ∂.dP[k-1] * ∂.dP_dR[k] + ∂.dp[k-1] * ∂.dp_dR[k]
+                else
+                    ∂.dd_dR
+                end
+                dd += dd_dRk * dR[k]
+            end
+            dd
+        end
+        dK_dθ = mapreduce(+,1:Nmpc) do k
+            dK = zeros(m*n,p)
+            if !isnothing(dQ) && k > 1
+                dK_dQk = ∂.dP_K[k-1] * ∂.dP_dQ[k]
+                dK += dK_dQk * dQ[k]
+            end
+            if !isnothing(dR) && k < Nmpc
+                dK_dRk = if k > 1
+                    ∂.dP_K[k-1] * ∂.dP_dR[k]
+                else
+                    ∂.dK_dR
+                end
+                dK += dK_dRk * dR[k]
+            end
+            dK
+        end
+    
+        # Calculate total derivative of u1 wrt the parameters θ
+        dU[i] = -kron(dx',I(m)) * dK_dθ + dd_dθ - ∂.K[1] * dX[i]
+    
+        # Propagate the derivatives to the next time step through the simulated dynamics 
+        dX[i+1] = Ai * dX[i] + Bi * dU[i]
+    end
+    X,U, dX,dU
 end

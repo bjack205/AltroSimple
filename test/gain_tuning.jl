@@ -1,4 +1,5 @@
 using LinearAlgebra
+using SimpleAltro
 import SimpleAltro: tvlqr, dlqr 
 using RobotZoo
 using FiniteDiff
@@ -13,23 +14,34 @@ include("scotty.jl")
 
 evec(n,i) = begin e = zeros(n); e[i] = 1; e end
 
-struct TrackingObjective{T}
-    f::Function     # dynamics function
-    df::Function    # dynamics Jacobian
+# struct TrackingObjective{T}
+#     f::Function     # dynamics function
+#     df::Function    # dynamics Jacobian
 
-    # Reference trajectory
-    Xref::Vector{Vector{T}}
-    Uref::Vector{Vector{T}}
+#     # Reference trajectory
+#     Xref::Vector{Vector{T}}
+#     Uref::Vector{Vector{T}}
 
-    # MPC params
-    Nmpc::Int
-end
+#     # MPC params
+#     Nmpc::Int
+# end
 
-function build_tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd)
-    T = promote_type(eltype(Qd), eltype(Rd))
+function build_tvlqr(theta, Nmpc, i)
+    global Xref
+    global Uref
+    global dyn
+    global jac
     n = length(Xref[1])
     m = length(Uref[1])
-    Nmpc = length(Xref)
+
+    Qd = theta[1:n]
+    Rd = theta[n+1:end]
+
+    mpc_inds = (i-1) .+ (1:Nmpc)
+    xref = view(Xref, mpc_inds)
+    uref = view(Uref, mpc_inds)
+
+    T = eltype(theta)
     A = [zeros(T,n,n) for k = 1:Nmpc-1]
     B = [zeros(T,n,m) for k = 1:Nmpc-1]
     f = [zeros(T,n) for k = 1:Nmpc-1]
@@ -41,8 +53,8 @@ function build_tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd)
     r = [zeros(T,m) for k = 1:Nmpc-1]
     
     for k = 1:Nmpc-1
-        f[k] .= fd(Xref[k], Uref[k], h) - Xref[k+1]
-        J = df(Xref[k], Uref[k], h)
+        f[k] .= dyn(xref[k], uref[k], h) - xref[k+1]
+        J = jac(xref[k], uref[k], h)
 
         A[k] .= J[:,1:n]
         B[k] .= J[:,1+n:end]
@@ -50,67 +62,35 @@ function build_tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd)
         R[k] .= Diagonal(Rd)
     end
     Q[Nmpc] .= Diagonal(Qd)
-    return A,B,f, Q,R,H,q,r
+    return xref,uref, A,B,f, Q,R,H,q,r
 end
 
-function tvlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, x0)
-    K,d,P,p = tvlqr(build_tvlqr(fd, df, Xref, Uref, Qd, Rd)...)
+function simulate(dyn, build_tvlqr, x0, theta, h, m; Nmpc=21, tsim=h*(length(Xref) - Nmpc))
+    T = eltype(theta) 
+    times = range(0, tsim, step=h)
+    n = length(x0)
+    Nsim = length(times)
+    Xsim = [zeros(T,n) * NaN for t in times]
+    Usim = [zeros(T,m) for k = 1:Nsim-1]
+    Xmpc = [[zeros(T,n) for k = 1:Nmpc] for i = 1:Nsim-1]
 
-    X = [zeros(T,n) for k = 1:Nmpc]
-    U = [zeros(T,m) for k = 1:Nmpc-1]
-    Y = [zeros(T,n) for k = 1:Nmpc]
+    Xsim[1] .= x0
+    for k = 1:Nsim - 1
+        tvlqr_data = build_tvlqr(theta, Nmpc, k)
+        xref = tvlqr_data[1]
+        uref = tvlqr_data[2]
+        dx = Xsim[k] - xref[1]
 
-    X[1] .= x0
-    for k = 1:Nmpc-1
-        Y[k] = P[k] * X[k] + p[k]
-        U[k] = -K[k] * X[k] + d[k]
-        X[k+1] = A[k] * X[k] + B[k] * U[k] + f[k]
+        dX,dU = tvlqr(tvlqr_data[3:end]..., dx)
+        Xmpc[k] = xref .+ dX
+
+        Usim[k] = uref[1] + dU[1]
+        Xsim[k+1] = dyn(Xsim[k], uref[1] + dU[1], h)
     end
-    Y[Nmpc] = P[Nmpc] * X[Nmpc] + p[Nmpc]
-
-    return X,U,Y, K,d,A,B,f
+    Xsim, Usim, Xmpc
 end
 
-function dlqr(fd::Function, df::Function, Xref, Uref, Qd, Rd, h)
-    T = promote_type(eltype(Qd), eltype(Rd))
-    n = length(Xref[1])
-    m = length(Uref[1])
-    Nmpc = length(Xref)
-    A = [zeros(T,n,n) for k = 1:Nmpc-1]
-    B = [zeros(T,n,m) for k = 1:Nmpc-1]
-    f = [zeros(T,n) for k = 1:Nmpc-1]
-
-    Q = [zeros(T,n,n) for k = 1:Nmpc]
-    R = [zeros(T,m,m) for k = 1:Nmpc-1]
-    H = [zeros(T,m,n) for k = 1:Nmpc-1]
-    q = [zeros(T,n) for k = 1:Nmpc]
-    r = [zeros(T,m) for k = 1:Nmpc-1]
-    
-    X = [zeros(T,n) for k = 1:Nmpc]
-    U = [zeros(T,m) for k = 1:Nmpc-1]
-    Y = [zeros(T,n) for k = 1:Nmpc]
-
-    for k = 1:Nmpc-1
-        f[k] .= fd(Xref[k], Uref[k], h) - Xref[k+1]
-        J = df(Xref[k], Uref[k], h)
-
-        A[k] .= J[:,1:n]
-        B[k] .= J[:,1+n:end]
-        Q[k] .= Diagonal(Qd)
-        R[k] .= Diagonal(Rd)
-    end
-    Q[Nmpc] .= Diagonal(Qd)
-    ∂ = dlqr(A,B,f, Q,R,H,q,r)
-
-    return ∂
-end
-
-function tvlqr_get_control(fd::Function, df::Function, Xref, Uref, Qd, Rd, h, x0)
-    _,dU = tvlqr(fd, df, Xref, Uref, Qd, Rd, h, x0)
-    return Uref[1] + dU[1]
-end
-
-function nonlinear_rollout(f, K,d, xref, uref, x0, h)
+function nonlinear_rollout(dyn, K,d, xref, uref, x0, h)
     N = length(K) + 1
     X = [copy(x0) for k = 1:N]
     U = deepcopy(d)
@@ -118,50 +98,17 @@ function nonlinear_rollout(f, K,d, xref, uref, x0, h)
         dx = X[k] - xref[k]
         du = -K[k] * dx + d[k]
         U[k] = uref[k] + du
-        X[k+1] = f(X[k], U[k], h)
+        X[k+1] = dyn(X[k], U[k], h)
     end
     return X,U
 end
 
-function objective(obj::TrackingObjective, theta)
-    T = eltype(T)
-    n,m = size(ctrl.B[1])
-    Nmpc = obj.Nmpc
-    Qd = theta[1:n]
-    Rd = theta[n+1:end]
-
-    
-    Xref = obj.Xref
-    Nref = legnth(Xref)
-    xk = zeros(eltype(theta), n) 
-    xk .= Xref[1]
-    J = zero(eltype(theta))
-
-    for i = 1:Nref-1
-
-        # Calculate TVLQR 
-        K,d = tvlqr(obj.f, obj.df, obj.Xref, obj.Uref, Qd, Rd)
-
-        # Evaluate the control
-        dx = xk - Xref[i]
-        du = K[1] * dx + d[1]
-        uk = xref[i] + du
-
-        # Propagate the dynamics
-        xk .= obj.f(xk,uk)
-
-        # Calculate the cost
-        dx = xk - xref[i+1]
-        J += 0.5 * dot(dx,dx) 
-    end
-    return J
-end
 
 ## Generate the model
 model = RobotZoo.BicycleModel()
 dmodel = RD.DiscretizedDynamics{RD.RK4}(model)
-fd(x,u,h) = RD.discrete_dynamics(dmodel, x, u, 0.0, h)
-df(x,u,h) = begin
+dyn(x,u,h) = RD.discrete_dynamics(dmodel, x, u, 0.0, h)
+jac(x,u,h) = begin
     T = promote_type(eltype(x), eltype(u))
     n,m = length(x), length(u)
     J = zeros(T, n, n + m)
@@ -218,63 +165,38 @@ end
 #     Xref[k+1] = fd(Xref[k], Uref[k], h)
 # end
 
-function simulate(fd, df, Xref, Uref, Qd, Rd, h, x0=copy(Xref[1]); Nmpc=21, tsim=h*(length(Xref) - Nmpc))
-    T = promote_type(eltype(Qd), eltype(Rd))
-    times = range(0, tsim, step=h)
-    n = length(Xref[1])
-    m = length(Uref[1])
-    Nsim = length(times)
-    Xsim = [zeros(T,n) * NaN for t in times]
-    Usim = [zeros(T,m) for k = 1:Nsim-1]
-    Xmpc = [[zeros(T,n) for k = 1:Nmpc] for i = 1:Nsim-1]
-
-    mpc_inds = 1:Nmpc
-
-    Xsim[1] .= x0
-    for k = 1:Nsim - 1
-        xref = view(Xref, mpc_inds)
-        uref = view(Uref, mpc_inds)
-        dx = Xsim[k] - xref[1]
-        dX,dU = tvlqr(fd, df, xref, uref, Qd, Rd, h, dx)
-        Xmpc[k] = xref .+ dX
-
-        Usim[k] = uref[1] + dU[1]
-        Xsim[k+1] = fd(Xsim[k], uref[1] + dU[1], h)
-        mpc_inds = mpc_inds .+ 1
-    end
-    Xsim, Usim, Xmpc
-end
 
 ## MPC Params
 Qd = [1.0,1.0,1.001,1.001] 
 Rd = [0.1, 0.1] 
+theta = [Qd; Rd]
 Nmpc = 21
-kstart = 300
+kstart = 1 
 dx0 = Float64[0.0,1.0,0,0]
 x = Xref[kstart] + dx0
 mpc_inds = (1:Nmpc) .+ (kstart-1)
 
 
 ## Step through Solve
-xref = view(Xref, mpc_inds)
-uref = view(Uref, mpc_inds)
+xref,uref, A,B,f, Q,R,H,q,r = build_tvlqr(theta,Nmpc,mpc_inds[1])
 dx = x - xref[1]
-dX,dU,dY, K,d,A,B,f = tvlqr(fd, df, xref, uref, Qd, Rd, h, dx)
+dX,dU,dY, K,d,P,p = tvlqr(A,B,f, Q,R,H,q,r, dx)
 
 # Check optimality conditions
 dyn_err = map(1:Nmpc-1) do k
     A[k] * dX[k] + B[k] * dU[k] + f[k] - dX[k+1]
 end
-norm(dyn_err)
+@test norm(dyn_err) < sqrt(eps())
 
 stat_x = map(1:Nmpc-1) do k
     Diagonal(Qd) * dX[k] - dY[k] + A[k]'dY[k+1]
 end
-norm(stat_x)
+@test norm(stat_x) < sqrt(eps()) 
+
 stat_u = map(1:Nmpc-1) do k
     Diagonal(Rd) * dU[k] + B[k]'dY[k+1]
 end
-norm(stat_u)
+@test norm(stat_u) < sqrt(eps()) 
 
 # Plot the solution
 Xmpc = xref .+ dX
@@ -283,20 +205,18 @@ p = traj2(Xref, size=(800,800), aspect_ratio=:equal)
 traj2!(Xmpc, lw=2)
 
 xref[1]
-Xnl,Unl = nonlinear_rollout(fd, K,d, xref, uref, x, h)
+Xnl,Unl = nonlinear_rollout(dyn, K,d, xref, uref, x, h)
 traj2!(Xnl, lw=2)
 display(p)
 
 mpc_inds = mpc_inds .+ 1
-x = fd(x, uref[1] + dU[1], h)
+x = dyn(x, uref[1] + dU[1], h)
 
 #############################################
-# Diff through the closed-loop rollout
+## Diff through the closed-loop rollout
 #############################################
 function objective(theta)
-    Qd = theta[1:n]
-    Rd = theta[n+1:end]
-    Xsim, Usim = simulate(fd, df, Xref, Uref, Qd, Rd, h; tsim=20.0)
+    Xsim, Usim = simulate(dyn, build_tvlqr, Xref[1], theta, h, m; Nmpc, tsim=20)
     Nsim = length(Xsim)
     mapreduce(+,1:Nsim) do k
         dx = Xsim[k] - Xref[k]
@@ -304,25 +224,35 @@ function objective(theta)
     end / 2Nsim
 end
 
+function grad_objective(theta)
+    global dyn, jac, x0, h, n, m, Nsim, Nsim, dQ, dR
+    _,_,dX = SimpleAltro.tvlqr_closed_loop_derivatives(dyn, jac, x0, theta, h, build_tvlqr, n, m, Nsim, Nmpc; dQ, dR)
+    mapreduce(+,1:Nsim) do i
+        dx = Xsim[i] - Xref[i]
+        dX_dθ[i]'dx
+    end / Nsim
+end
+
 # Parameter derivatives
 dQ_dtheta = [reduce(hcat,evec(n*n,i + (i-1)*n) for i = 1:n) zeros(n*n, m)]
 dR_dtheta = [zeros(m*m, n) reduce(hcat, evec(m*m, i + (i-1)*m) for i = 1:m)]
 
 # Simulate the system
-Xsim, Usim = simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)
+# Xsim, Usim = simulate(dyn, jac, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)
+Xsim, Usim = simulate(dyn, build_tvlqr, Xref[1], theta, h, m; Nmpc, tsim=20)
+traj2(Xref, size=(800,800), aspect_ratio=:equal)
+traj2!(Xsim, lw=2)
+
 Nsim = length(Xsim)
 Jsim = map(1:Nsim-1) do k
-    df(Xsim[k], Usim[k], h)
+    jac(Xsim[k], Usim[k], h)
 end
 Asim = [J[:,1:n] for J in Jsim]
 Bsim = [J[:,1+n:end] for J in Jsim]
 
-
 # Build TVLQR data
 mpc_inds = 1:Nmpc
-xref = view(Xref, mpc_inds)
-uref = view(Uref, mpc_inds)
-A,B,f, Q,R,H,q,r = build_tvlqr(fd, df, xref, uref, Qd, Rd)
+xref,uref, A,B,f, Q,R,H,q,r = build_tvlqr(theta, Nmpc, 1)
 dx = Xsim[1] - xref[1]
 
 # Use ForwardDiff to diff TVLQR 
@@ -343,7 +273,7 @@ du1_dRd = ForwardDiff.jacobian(Rd) do Rd
     K_,d_ = tvlqr(A,B,f, Q,R_,H, q,r)
     -K_[1] * dx + d_[1]
 end
-dU1 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[2][1], theta)
+dU1 = ForwardDiff.jacobian(theta->simulate(dyn, build_tvlqr, Xref[1], theta, h, m; tsim=20.0)[2][1], theta)
 
 # Get the TVLQR derivatives
 ∂1 = dlqr(A,B,f, Q,R,H,q,r)
@@ -366,12 +296,8 @@ du1_dtheta = du1_dQ * dQ_dtheta + du1_dR * dR_dtheta
 #############################################
 # Next time step
 #############################################
-mpc_inds = 1 .+ (1:Nmpc) 
-xref = view(Xref, mpc_inds)
-uref = view(Uref, mpc_inds)
-
 # Use ForwardDiff to get TVLQR derivatives
-A,B,f, Q,R,H,q,r = build_tvlqr(fd, df, xref, uref, Qd, Rd)
+xref,uref, A,B,f, Q,R,H,q,r = build_tvlqr(theta, Nmpc, 2)
 dx = Xsim[2] - xref[1]
 du1_dQd = ForwardDiff.jacobian(Qd) do Qd
     Q_ = similar.(Q,eltype(Qd))
@@ -389,11 +315,11 @@ du1_dRd = ForwardDiff.jacobian(Rd) do Rd
     K_,d_ = tvlqr(A,B,f, Q,R_,H, q,r)
     -K_[1] * dx + d_[1]
 end
-dX2 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[1][2], theta)
-dU2 = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[2][2], theta)
+dX2 = ForwardDiff.jacobian(theta->simulate(dyn, build_tvlqr, Xref[1], theta, h, m; tsim=20.0)[1][2], theta)
+dU2 = ForwardDiff.jacobian(theta->simulate(dyn, build_tvlqr, Xref[1], theta, h, m; tsim=20.0)[2][2], theta)
 
 # Calculate TVLQR derivatives
-∂2 = dlqr(fd, df, xref, uref, Qd, Rd, h)
+∂2 = dlqr(A,B,f, Q,R,H,q,r)
 dd_dQ_2 = mapreduce(+,2:Nmpc) do k
     ∂2.dP[k-1] * ∂2.dP_dQ[k] + ∂2.dp[k-1] * ∂2.dp_dQ[k]
 end
@@ -427,16 +353,25 @@ du1_dtheta_2 = du1_dQ_2 + du1_dR_2 - ∂2.K[1] * dX2
 #############################################
 ## Calculate derivatives of CL trajectory
 #############################################
+dQ = [dQ_dtheta for k = 1:Nmpc]
+dR = [dR_dtheta for k = 1:Nmpc-1]
+
+Xsim, Usim = simulate(dyn, build_tvlqr, Xref[1], theta, h, m; Nmpc, tsim=20)
+
 dX_dθ = [zeros(n,n+m) for k = 1:Nsim]
-dU_dθ = [zeros(m,n+m) for k = 1:Nsim]
+dU_dθ = [zeros(m,n+m) for k = 1:Nsim-1]
 
 dX_dθ[1] .= 0
 for i = 1:Nsim-1
-    mpc_inds = (i-1) .+ (1:Nmpc) 
-    xref = view(Xref, mpc_inds)
-    uref = view(Uref, mpc_inds)
+    # mpc_inds = (i-1) .+ (1:Nmpc) 
+    # xref = view(Xref, mpc_inds)
+    # uref = view(Uref, mpc_inds)
+    # ∂ = dlqr(fd, df, xref, uref, Qd, Rd, h)  # calculate derivatives of TVLQR
+    tvlqr_data = build_tvlqr(theta,Nmpc,i)
+    xref = tvlqr_data[1]
+    uref = tvlqr_data[2]
+    ∂ = dlqr(tvlqr_data[3:end]...)       # calculate derivatives of TVLQR problem
     dx = Xsim[i] - xref[1]                   # state error at first time step
-    ∂ = dlqr(fd, df, xref, uref, Qd, Rd, h)  # calculate derivatives of TVLQR
 
     # Calculate derivatives wrt parameters
     # Since the parameters apply at each time step, sum the derivatives of each time step
@@ -462,17 +397,27 @@ for i = 1:Nsim-1
     end
 
     # Calculate total derivative of u1 wrt the parameters θ
-    du_dQ = (-kron(dx',I(m)) * dK_dQ + dd_dQ) * dQ_dtheta
-    du_dR = (-kron(dx',I(m)) * dK_dR + dd_dR) * dR_dtheta
-    dU_dθ[i] = du_dQ + du_dR - ∂.K[1] * dX_dθ[i] 
+    dU_dQ = -kron(dx',I(m)) * dK_dQ + dd_dQ
+    dU_dR = -kron(dx',I(m)) * dK_dR + dd_dR
+    dU_dθ[i] = dU_dQ * dQ_dtheta + dU_dR * dR_dtheta - ∂.K[1] * dX_dθ[i] 
 
     # Derivative of the state wrt the parameters θ
     dX_dθ[i+1] = Asim[i] * dX_dθ[i] + Bsim[i] * dU_dθ[i]
 end
 @test dU_dθ[2] ≈ du1_dtheta_2
 
-dXN = ForwardDiff.jacobian(theta->simulate(fd, df, Xref, Uref, theta[1:n], theta[n+1:end], h; tsim=20.0)[1][Nsim], theta)
+dXN = ForwardDiff.jacobian(theta->simulate(dyn, build_tvlqr, Xref[1], theta, h, m; tsim=20.0)[1][Nsim], theta)
 @test dX_dθ[Nsim] ≈ dXN
+
+X,U,dX,dU = SimpleAltro.tvlqr_closed_loop_derivatives(dyn,jac, Xref[1],theta,h, build_tvlqr, n,m,Nsim,Nmpc; 
+    dQ, dR)
+@test X ≈ Xsim
+@test U ≈ Usim
+@test dX ≈ dX_dθ
+@test dU ≈ dU_dθ
+
+dX_dθ ≈ dX
+X ≈ Xsim
 
 dtheta = mapreduce(+,1:Nsim) do i
     dx = Xsim[i] - Xref[i]
@@ -480,8 +425,12 @@ dtheta = mapreduce(+,1:Nsim) do i
 end / Nsim
 
 dtheta_ad = ForwardDiff.gradient(objective, theta)
-# Derivative of entire objective
+@test dtheta ≈ dtheta_ad
 
+x0 = copy(Xref[1])
+@test grad_objective(theta) ≈ dtheta_ad
+
+# Derivative of entire objective
 Qd = [1.0,1.0,10.100,10.100] 
 Rd = [0.01, 0.01] 
 theta = [Qd; Rd]
